@@ -80,6 +80,7 @@ function App() {
   const [selectedPost, setSelectedPost] = useState(null);
   const [dailyIndex] = useState(() => new Date().getDate() % prompts.length);
 
+  const toastTimer = useRef(null);
   const commentUnsubRef = useRef(null);
   const reactionUnsubRef = useRef(null);
 
@@ -157,7 +158,7 @@ function App() {
     return () => window.removeEventListener("popstate", sync);
   }, []);
 
-  function notify(message) { setToast(message); window.clearTimeout(notify.timer); notify.timer = window.setTimeout(()=>setToast(""), 2600); }
+  function notify(message) { setToast(message); window.clearTimeout(toastTimer.current); toastTimer.current = window.setTimeout(()=>setToast(""), 2600); }
   function goHome(section="Explore") {
     window.history.pushState({}, "", "/");
     setSelectedPost(null); setActive(section); setMobileNav(false); window.scrollTo({top:0,behavior:"smooth"});
@@ -349,7 +350,9 @@ function App() {
       </aside>
 
       <main className="main">
-        {currentPost ? (
+        {selectedPost && !currentPost && cloudStatus!=="connecting" ? (
+          <section className="detail-page"><button className="back-link" onClick={()=>goHome()}><ArrowLeft size={16}/> Back to the community</button><div className="empty-state"><Search size={24}/><h3>Thought not found</h3><p>It may have been deleted, or it isn't available in this view.</p></div></section>
+        ) : currentPost ? (
           <PostDetail
             post={currentPost}
             detailLoading={detailLoading}
@@ -370,18 +373,18 @@ function App() {
             currentUid={cloudUser?.uid ?? null}
           />
         ) : (
-        <>
-          <section className="hero"><div className="hero-glow glow-one"/><div className="hero-glow glow-two"/><div className="hero-content"><div className="eyebrow"><span className="eyebrow-dot"/> A SPACE BEYOND IDENTITY</div><h1>{pageTitle}<br/><em>Your thoughts deserve a voice.</em></h1><p>{pageSub}</p><div className="hero-buttons"><button className="primary-btn" onClick={()=>openComposer()}>Share your thoughts <ArrowUpRight size={16}/></button><button className="quiet-btn" onClick={()=>document.getElementById("community-feed")?.scrollIntoView({behavior:"smooth"})}>Explore the community <span>↓</span></button></div></div><div className="hero-note"><span className="note-star"><Sparkles size={15}/></span><span>NO JUDGMENT. NO PRESSURE.<br/><b>JUST YOU AND YOUR THOUGHTS.</b></span></div><div className="hero-orbit orbit-a"/><div className="hero-orbit orbit-b"/></section>
-          <section className="daily-card"><div className="daily-icon"><Sparkles size={18}/></div><div className="daily-copy"><div className="section-kicker">A QUESTION TO SIT WITH</div><h3>{prompts[dailyIndex]}</h3><span>Today's quiet prompt · Take your time</span></div><button className="daily-cta" onClick={()=>openComposer()}>Reflect on this <ArrowUpRight size={15}/></button></section>
-          <section className="feed-section" id="community-feed"><div className="feed-heading"><div><div className="section-kicker">THE COMMUNITY</div><h2>{active==="Saved thoughts"?"Your saved thoughts":"Thoughts, out in the open"}<span>.</span></h2><p>Little pieces of people, shared without names.</p></div><div className="feed-tools"><label className="searchbox"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Find a thought..." aria-label="Search thoughts"/></label><select value={sort} onChange={e=>setSort(e.target.value)} aria-label="Sort posts"><option>Latest</option><option>Trending</option><option>Most discussed</option></select></div></div>
-            <div className="category-row">{categories.map(c=><button key={c} className={`category-pill ${category===c?"chosen":""}`} onClick={()=>setCategory(c)}>{c}</button>)}</div>
-            <div className="post-list">{visiblePosts.length?visiblePosts.map((p,i)=><PostCard key={p.id} post={p} index={i} userReaction={userReactions[p.id]} isSaved={effectiveSaved.includes(p.id)} onReact={(id,type)=>handleReact(id,type)} onSave={()=>handleToggleSave(p.id)} onOpen={()=>openPost(p.id)} onReport={reportPost} onEdit={()=>openComposer(p)} onDelete={()=>deletePost(p.id)}/>):<div className="empty-state"><Search size={24}/><h3>No thoughts found</h3><p>Try another search or category. There may be a thought waiting for you.</p><button onClick={()=>{setQuery("");setCategory("All")}}>Clear filters</button></div>}</div>
-            <div className="feed-end"><span/> THAT'S ALL FOR NOW <span/></div>
-          </section>
-          <section className="bottom-invite"><div className="invite-mark"><Feather size={22}/></div><div><h2>Something on your mind?</h2><p>It doesn't have to be perfect. It just has to be yours.</p></div><button className="primary-btn" onClick={()=>openComposer()}>Let it out <ArrowUpRight size={16}/></button></section>
-        </>
-      )}
-      </main>
+          <>
+            <section className="hero"><div className="hero-glow glow-one"/><div className="hero-glow glow-two"/><div className="hero-content"><div className="eyebrow"><span className="eyebrow-dot"/> A SPACE BEYOND IDENTITY</div><h1>{pageTitle}<br/><em>Your thoughts deserve a voice.</em></h1><p>{pageSub}</p><div className="hero-buttons"><button className="primary-btn" onClick={()=>openComposer()}>Share your thoughts <ArrowUpRight size={16}/></button><button className="quiet-btn" onClick={()=>document.getElementById("community-feed")?.scrollIntoView({behavior:"smooth"})}>Explore the community <span>↓</span></button></div></div><div className="hero-note"><span className="note-star"><Sparkles size={15}/></span><span>NO JUDGMENT. NO PRESSURE.<br/><b>JUST YOU AND YOUR THOUGHTS.</b></span></div><div className="hero-orbit orbit-a"/><div className="hero-orbit orbit-b"/></section>
+            <section className="daily-card"><div className="daily-icon"><Sparkles size={18}/></div><div className="daily-copy"><div className="section-kicker">A QUESTION TO SIT WITH</div><h3>{prompts[dailyIndex]}</h3><span>Today's quiet prompt · Take your time</span></div><button className="daily-cta" onClick={()=>openComposer()}>Reflect on this <ArrowUpRight size={15}/></button></section>
+            <section className="feed-section" id="community-feed"><div className="feed-heading"><div><div className="section-kicker">THE COMMUNITY</div><h2>{active==="Saved thoughts"?"Your saved thoughts":"Thoughts, out in the open"}<span>.</span></h2><p>Little pieces of people, shared without names.</p></div><div className="feed-tools"><label className="searchbox"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Find a thought..." aria-label="Search thoughts"/></label><select value={sort} onChange={e=>setSort(e.target.value)} aria-label="Sort posts"><option>Latest</option><option>Trending</option><option>Most discussed</option></select></div></div>
+              <div className="category-row">{categories.map(c=><button key={c} className={`category-pill ${category===c?"chosen":""}`} onClick={()=>setCategory(c)}>{c}</button>)}</div>
+              <div className="post-list">{visiblePosts.length?visiblePosts.map((p,i)=><PostCard key={p.id} post={p} index={i} userReaction={userReactions[p.id]} isSaved={effectiveSaved.includes(p.id)} onReact={(id,type)=>handleReact(id,type)} onSave={()=>handleToggleSave(p.id)} onOpen={()=>openPost(p.id)} onReport={reportPost} onEdit={()=>openComposer(p)} onDelete={()=>deletePost(p.id)}/>):<div className="empty-state"><Search size={24}/><h3>No thoughts found</h3><p>Try another search or category. There may be a thought waiting for you.</p><button onClick={()=>{setQuery("");setCategory("All")}}>Clear filters</button></div>}</div>
+              <div className="feed-end"><span/> THAT'S ALL FOR NOW <span/></div>
+            </section>
+            <section className="bottom-invite"><div className="invite-mark"><Feather size={22}/></div><div><h2>Something on your mind?</h2><p>It doesn't have to be perfect. It just has to be yours.</p></div><button className="primary-btn" onClick={()=>openComposer()}>Let it out <ArrowUpRight size={16}/></button></section>
+          </>
+        )}
+        </main>
 
         <footer className="footer"><a className="brand small" href="/" onClick={e=>{e.preventDefault();goHome()}}><span className="brand-mark"><Feather size={15}/></span><span>UNSAID<span className="brand-dot">.</span></span></a><span>Your thoughts deserve a voice. {cloudStatus==="connected"?"Community connected":cloudStatus==="connecting"?"Connecting…":cloudStatus==="error"?"Connection issue":"Local preview mode"}</span><div><button onClick={()=>notify("About UNSAID: a space for thoughtful anonymous expression.")}>About</button><button onClick={()=>notify("Be kind. Do not share identifying details, threats, or targeted harassment.")}>Guidelines</button><button onClick={()=>notify("This prototype stores data locally in your browser.")}>Privacy</button></div></footer>
 
@@ -389,7 +392,7 @@ function App() {
     </div>
 
     {composer&&<Composer editing={Boolean(editingId)} draft={draft} setDraft={setDraft} category={draftCategory} setCategory={setDraftCategory} tags={draftTags} setTags={setDraftTags} onClose={()=>{setComposer(false);setEditingId(null)}} onPublish={publish}/>}
-    {toast&&<div className="toast"><Check size={16}/>{toast}</div>}
+    <div className="toast-region" role="status" aria-live="polite">{toast&&<div className="toast"><Check size={16} aria-hidden="true"/>{toast}</div>}</div>
   </div>;
 }
 

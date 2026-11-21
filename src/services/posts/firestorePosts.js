@@ -1,11 +1,23 @@
 import {
-  collection, doc, getDoc, getDocs, onSnapshot, orderBy, query, where, limit,
-  writeBatch, serverTimestamp, updateDoc, deleteDoc,
+  collection, doc, getDocs, onSnapshot, orderBy, query, where, limit,
+  writeBatch, serverTimestamp, updateDoc, deleteDoc, getDoc, increment,
 } from "firebase/firestore";
 import { db } from "../firebase/client";
 
 const postsRef = () => collection(db, "posts");
 const ownersRef = () => collection(db, "postOwners");
+
+// Defense in depth only: the authoritative checks live in firestore.rules.
+export const CATEGORIES = ["Thoughts","Confessions","Relationships","Friendship","Loneliness","University Life","Mental Wellbeing","Society","Unpopular Opinions","Life Experiences","Questions"];
+export const REACTION_TYPES = ["understand","alone","feel"];
+const TEXT_MIN = 12, TEXT_MAX = 1200, TAG_MAX = 5, TAG_LEN = 30;
+
+function validatePost({ text, category, tags }) {
+  if (typeof text !== "string" || text.length < TEXT_MIN || text.length > TEXT_MAX) throw new Error("Your thought must be between 12 and 1,200 characters.");
+  if (!CATEGORIES.includes(category)) throw new Error("Please choose a valid space.");
+  if (!Array.isArray(tags) || tags.length > TAG_MAX) throw new Error("Use up to five tags.");
+  return { text, category, tags: tags.map((t) => String(t).slice(0, TAG_LEN)) };
+}
 
 function normalizePost(snapshot, ownerIds) {
   const data = snapshot.data();
@@ -33,13 +45,14 @@ export function subscribeToPosts(uid, onPosts, onError) {
   const stopOwners = uid
     ? onSnapshot(query(ownersRef(), where("uid", "==", uid)), (snap) => {
         ownerIds = new Set(snap.docs.map((item) => item.id)); ownersReady = true; publish();
-      }, onError)
+      }, (error) => { ownersReady = true; publish(); onError(error); })
     : () => { ownersReady = true; publish(); };
   if (!uid) { ownersReady = true; publish(); }
   return () => { stopPosts(); stopOwners(); };
 }
 
 export async function createPost({ uid, text, category, tags, authorLabel }) {
+  ({ text, category, tags } = validatePost({ text, category, tags }));
   const postRef = doc(postsRef());
   const ownerRef = doc(ownersRef(), postRef.id);
   const batch = writeBatch(db);
@@ -54,6 +67,7 @@ export async function createPost({ uid, text, category, tags, authorLabel }) {
 }
 
 export async function editPost({ id, uid, text, category, tags }) {
+  ({ text, category, tags } = validatePost({ text, category, tags }));
   const owner = await getDoc(doc(db, "postOwners", id));
   if (!owner.exists() || owner.data().uid !== uid) throw new Error("You can only edit your own thought.");
   await updateDoc(doc(db, "posts", id), { text, category, tags, edited: true, updatedAt: serverTimestamp() });
@@ -67,6 +81,11 @@ export async function removePost({ id, uid }) {
   batch.delete(doc(db, "posts", id));
   batch.delete(ownerRef);
   await batch.commit();
+}
+
+export async function reactToPost({ id, type }) {
+  if (!REACTION_TYPES.includes(type)) throw new Error("Unknown reaction.");
+  await updateDoc(doc(db, "posts", id), { [`reactions.${type}`]: increment(1) });
 }
 
 /**
