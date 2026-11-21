@@ -14,11 +14,11 @@ function formatTime(timestamp) {
   const now = Date.now();
   const minutes = Math.max(0, Math.floor((now - d.getTime()) / 60000));
   if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hr${hours === 1 ? "" : "s"} ago`;
+  if (hours < 24) return `${hours}h`;
   const days = Math.floor(hours / 24);
-  return `${days} day${days === 1 ? "" : "s"} ago`;
+  return `${days}d`;
 }
 
 export default function CommentSection({
@@ -51,8 +51,8 @@ export default function CommentSection({
         if (onCountChange) onCountChange(fresh.length);
       },
       (err) => {
-        console.error("UNSAID comments error:", err);
-        setError("Couldn't load comments.");
+        console.error("unsaid comments error:", err);
+        setError("Couldn't load replies.");
         setLoading(false);
       }
     );
@@ -81,7 +81,7 @@ export default function CommentSection({
     const clean = draft.trim();
     if (!clean || clean.length < 1 || clean.length > MAX_COMMENT_LENGTH) return;
     if (!currentUid) {
-      setError("Your anonymous session is not ready.");
+      setError("Your anonymous session isn't ready.");
       return;
     }
     setSubmitting(true);
@@ -98,7 +98,7 @@ export default function CommentSection({
       setDraft("");
       if (textAreaRef.current) textAreaRef.current.value = "";
     } catch (err) {
-      setError(err.message || "Couldn't post your comment.");
+      setError(err.message || "Couldn't post your reply.");
     } finally {
       setSubmitting(false);
     }
@@ -109,7 +109,7 @@ export default function CommentSection({
     const clean = replyDraft.trim();
     if (!clean || clean.length < 1 || clean.length > MAX_COMMENT_LENGTH) return;
     if (!currentUid) {
-      setError("Your anonymous session is not ready.");
+      setError("Your anonymous session isn't ready.");
       return;
     }
     setSubmitting(true);
@@ -133,66 +133,49 @@ export default function CommentSection({
   }
 
   async function handleDelete(commentId) {
-    if (!window.confirm("Delete this comment? This cannot be undone.")) return;
+    if (!window.confirm("Delete this reply? This cannot be undone.")) return;
     if (!currentUid) return;
     try {
       await deleteComment({ postId, commentId, uid: currentUid });
     } catch (err) {
-      setError(err.message || "Couldn't delete the comment.");
+      setError(err.message || "Couldn't delete the reply.");
     }
   }
 
   return (
     <section className="comment-section">
-      <div className="comment-header">
-        <span className="comment-count">{topLevel.length} comment{topLevel.length !== 1 ? "s" : ""}</span>
-        {error && <span className="comment-error">{error}</span>}
-      </div>
-
-      {loading ? (
-        <div className="comment-skeleton-list">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="comment-skeleton">
-              <div className="skeleton-avatar" />
-              <div className="skeleton-body">
-                <div className="skeleton-line" />
-                <div className="skeleton-line short" />
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : topLevel.length === 0 ? (
-        <div className="empty-comments">
+      {error && <p className="error">{error}</p>}
+      {loading && <p className="muted">Loading replies…</p>}
+      {!loading && topLevel.length === 0 && !error && (
+        <div className="empty">
           <MessageCircle size={16} />
-          <p>No comments yet. Be the first to share a thought.</p>
+          <p>No replies yet. Be the first to respond.</p>
         </div>
-      ) : (
+      )}
+      {!loading && topLevel.length > 0 && (
         <div className="comment-list">
           {topLevel.map((comment) => (
-            <article key={comment.id} className="comment-card">
-              <div className="comment-header-row">
-                <div className="comment-author">{comment.authorLabel}</div>
-                <div className="comment-time">{formatTime(comment.createdAt)}</div>
-                <div className="comment-meta">
-                  {repliesByParent[comment.id]?.length && (
-                    <span className="reply-count">
-                      <Reply size={11} /> {repliesByParent[comment.id].length}
-                    </span>
-                  )}
-                </div>
+            <article key={comment.id} className="comment">
+              <div className="comment-head">
+                <span className="author">{comment.authorLabel}</span>
+                <span className="time">{formatTime(comment.createdAt)}</span>
+                <span className="reply-count">
+                  {repliesByParent[comment.id]?.length} reply{repliesByParent[comment.id].length !== 1 ? "s" : ""}
+                </span>
               </div>
               <p className="comment-text">{comment.text}</p>
               <div className="comment-actions">
                 {isOwner(comment) && (
-                  <button className="icon-btn compact" title="Delete comment" onClick={() => handleDelete(comment.id)}>
-                    <Trash2 size={13} />
+                  <button type="button" className="icon-btn compact danger" title="Delete reply" onClick={() => handleDelete(comment.id)}>
+                    <Trash2 size={16} aria-hidden="true" />
                   </button>
                 )}
                 <button
+                  type="button"
                   className="reply-btn"
                   onClick={() => setReplyingTo(replyingTo === comment.id ? null : comment.id)}
                 >
-                  <Reply size={13} /> Reply
+                  <Reply size={16} aria-hidden="true" /> Reply
                 </button>
               </div>
 
@@ -215,7 +198,7 @@ export default function CommentSection({
                         className="reply-send"
                         disabled={!replyDraft.trim().length || submitting}
                       >
-                        <Send size={13} />
+                        <Send size={14} aria-hidden="true" />
                       </button>
                     </div>
                   </form>
@@ -225,17 +208,17 @@ export default function CommentSection({
               {repliesByParent[comment.id]?.length > 0 && (
                 <div className="replies-list">
                   {repliesByParent[comment.id].map((reply) => (
-                    <article key={reply.id} className="comment-card comment-card--reply">
-                      <div className="comment-header-row">
-                        <div className="comment-author">{reply.authorLabel}</div>
-                        <div className="comment-time">{formatTime(reply.createdAt)}</div>
-                        <div className="comment-meta"></div>
+                    <article key={reply.id} className="comment comment--reply">
+                      <div className="comment-head">
+                        <span className="author">{reply.authorLabel}</span>
+                        <span className="time">{formatTime(reply.createdAt)}</span>
+                        <span className="reply-count"></span>
                       </div>
                       <p className="comment-text">{reply.text}</p>
                       <div className="comment-actions">
                         {isOwner(reply) && (
-                          <button className="icon-btn compact" title="Delete reply" onClick={() => handleDelete(reply.id)}>
-                            <Trash2 size={13} />
+                          <button type="button" className="icon-btn compact danger" title="Delete reply" onClick={() => handleDelete(reply.id)}>
+                            <Trash2 size={16} aria-hidden="true" />
                           </button>
                         )}
                       </div>
@@ -249,12 +232,11 @@ export default function CommentSection({
       )}
 
       <form onSubmit={handleSubmit} className="comment-composer">
-        <div className="composer-avatar">✳</div>
         <textarea
           ref={textAreaRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="Add a comment…"
+          placeholder="Write a reply…"
           maxLength={MAX_COMMENT_LENGTH}
           rows={3}
           className="comment-textarea"
@@ -263,10 +245,10 @@ export default function CommentSection({
           <span>{draft.length}/{MAX_COMMENT_LENGTH}</span>
           <button
             type="submit"
-            className="comment-send"
+            className="btn reply-send"
             disabled={!draft.trim().length || submitting}
           >
-            <Send size={14} />
+            <Send size={14} aria-hidden="true" />
           </button>
         </div>
       </form>
