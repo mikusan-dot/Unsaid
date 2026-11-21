@@ -1,6 +1,6 @@
 import {
-  collection, doc, getDocs, onSnapshot, orderBy, query, where, limit,
-  writeBatch, serverTimestamp, updateDoc, deleteDoc, getDoc,
+  collection, doc, getDoc, getDocs, onSnapshot, orderBy, query, where, limit,
+  writeBatch, serverTimestamp, updateDoc, deleteDoc,
 } from "firebase/firestore";
 import { db } from "../firebase/client";
 
@@ -67,4 +67,26 @@ export async function removePost({ id, uid }) {
   batch.delete(doc(db, "posts", id));
   batch.delete(ownerRef);
   await batch.commit();
+}
+
+/**
+ * Fetch a single post by ID for the detail page.
+ * Returns null if the post does not exist.
+ */
+export async function getPostById(id) {
+  const snap = await getDoc(doc(db, "posts", id));
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  return {
+    id: snap.id,
+    category: data.category,
+    text: data.text,
+    tags: data.tags ?? [],
+    createdAt: data.createdAt?.toMillis?.() ?? Date.now(),
+    comments: data.comments ?? 0,
+    reactions: data.reactions ?? { understand: 0, alone: 0, feel: 0 },
+    edited: Boolean(data.edited),
+    owner: false,
+    author: data.authorLabel ?? "Someone, somewhere",
+  };
 }

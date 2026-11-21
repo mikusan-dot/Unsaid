@@ -1,0 +1,155 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ========================================================================
+    // POSTS
+    // Public read. Owner (tracked in postOwners) can create, update, delete.
+    // Field validation on create/update. Unexpected fields rejected.
+    // ========================================================================
+    match /posts/{postId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        // Exact field set — no unexpected fields
+        && request.resource.data.keys() == [
+          'text', 'category', 'tags', 'authorLabel',
+          'comments', 'reactions', 'createdAt', 'edited'
+        ]
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 12
+        && request.resource.data.text.size() <= 1200
+        && request.resource.data.category is string
+        && request.resource.data.category.size() > 0
+        && request.resource.data.authorLabel is string
+        && request.resource.data.authorLabel.size() > 0
+        && request.resource.data.authorLabel.matches(/^Anonymous #[0-9]{4}$/)
+        && request.resource.data.tags is list
+        && request.resource.data.tags.size() <= 5
+        && request.resource.data.comments is number
+        && request.resource.data.comments == 0
+        && request.resource.data.reactions is map
+        && request.resource.data.reactions.keys() == ['understand', 'alone', 'feel']
+        && request.resource.data.reactions.understand == 0
+        && request.resource.data.reactions.alone == 0
+        && request.resource.data.reactions.feel == 0
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.edited is bool;
+
+      allow update: if request.auth != null
+        // Only the post owner (via postOwners) can update
+        && exists(/databases/$(database)/documents/postOwners/$(postId))
+        && get(/databases/$(database)/documents/postOwners/$(postId)).data.uid == request.auth.uid
+        // Only allowed fields may change
+        && !(request.resource.data.diff(resource.data).affectedKeys()
+          - ['text', 'category', 'tags', 'edited', 'updatedAt', 'comments', 'reactions']
+        ).size() > 0
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 12
+        && request.resource.data.text.size() <= 1200
+        // Immutable fields protected
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.authorLabel == resource.data.authorLabel
+        && request.resource.data.uid == resource.data.uid;
+
+      allow delete: if request.auth != null
+        && exists(/databases/$(database)/documents/postOwners/$(postId))
+        && get(/databases/$(database)/documents/postOwners/$(postId)).data.uid == request.auth.uid;
+    }
+
+    // ========================================================================
+    // POST OWNERS — private ownership tracking
+    // Only the owning UID can read/create/delete their own records.
+    // ========================================================================
+    match /postOwners/{postId} {
+      allow read: if request.auth != null && request.auth.uid == resource.data.uid;
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.uid
+        && request.resource.data.keys() == ['uid', 'createdAt']
+        && request.resource.data.uid is string
+        && request.resource.data.uid.size() > 0
+        && request.resource.data.createdAt is timestamp;
+      allow update: if false;
+      allow delete: if request.auth != null && request.auth.uid == resource.data.uid;
+    }
+
+    // ========================================================================
+    // COMMENTS — posts/{postId}/comments/{commentId}
+    // Public read. Authenticated users can create. Only the author can delete.
+    // Reply nesting limited to one level (parent must be top-level).
+    // ========================================================================
+    match /posts/{postId}/comments/{commentId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.uid
+        && request.resource.data.postId == postId
+        && request.resource.data.keys() == [
+          'postId', 'uid', 'authorLabel', 'text', 'createdAt', 'parentId'
+        ]
+        && request.resource.data.uid is string
+        && request.resource.data.uid.size() > 0
+        && request.resource.data.authorLabel is string
+        && request.resource.data.authorLabel.size() > 0
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 1
+        && request.resource.data.text.size() <= 500
+        && (
+          request.resource.data.parentId == null
+          || (
+            request.resource.data.parentId is string
+            && get(/databases/$(database)/documents/posts/$(postId)/comments/$(request.resource.data.parentId)).data.parentId == null
+          )
+        );
+
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // ========================================================================
+    // REACTIONS — posts/{postId}/reactions/{uid}
+    // Public read. Document ID is the UID, so impersonation is prevented.
+    // One reaction per user per post. Only the owner can create/update/delete.
+    // ========================================================================
+    match /posts/{postId}/reactions/{uid} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.keys() == ['type', 'createdAt', 'updatedAt']
+        && request.resource.data.type in ['understand', 'alone', 'feel']
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+
+      allow update: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.keys() == ['type', 'createdAt', 'updatedAt']
+        && request.resource.data.type in ['understand', 'alone', 'feel']
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ========================================================================
+    // BOOKMARKS — users/{uid}/bookmarks/{postId}
+    // Private to the owner. Document ID is the postId.
+    // ========================================================================
+    match /users/{uid}/bookmarks/{postId} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.keys() == ['postId', 'createdAt']
+        && request.resource.data.postId == postId
+        && request.resource.data.createdAt is timestamp;
+      allow update: if false;
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ========================================================================
+    // BLOCK ALL OTHER COLLECTIONS / DOCUMENTS
+    // ========================================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

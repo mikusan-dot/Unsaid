@@ -1,15 +1,26 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Feather, Compass, MessageCircle, MoonStar, Mail, Heart, Sparkles, Search,
   Sun, Menu, X, Bookmark, Flag, ArrowUpRight, ShieldCheck, Send, PenLine,
-  LockKeyhole, Check, Hash, ArrowLeft, Copy, MoreHorizontal, Pencil, Trash2,
-  Link2, Clock3, SlidersHorizontal
+  LockKeyhole, Check, Hash, ArrowLeft, Copy, Pencil, Trash2, Clock3
 } from "lucide-react";
 import "./styles.css";
 import { auth, firebaseConfigured, ensureAnonymousSession } from "./services/firebase/client";
 import { onAuthStateChanged } from "firebase/auth";
-import { subscribeToPosts, createPost, editPost, removePost } from "./services/posts/firestorePosts";
+import {
+  subscribeToPosts, createPost, editPost, removePost, getPostById,
+} from "./services/posts/firestorePosts";
+import {
+  subscribeToComments, addComment, deleteComment,
+} from "./services/firestoreComments";
+import {
+  setReaction, removeReaction, subscribeToReactions,
+} from "./services/firestoreReactions";
+import {
+  addBookmark, removeBookmark, subscribeToBookmarks,
+} from "./services/firestoreBookmarks";
+import CommentSection from "./components/CommentSection";
 
 const STORAGE_KEY = "unsaid-phase2-posts";
 const SAVED_KEY = "unsaid-phase2-saved";
@@ -48,6 +59,12 @@ function App() {
   const [cloudUser, setCloudUser] = useState(null);
   const [cloudStatus, setCloudStatus] = useState(firebaseConfigured ? "connecting" : "demo");
   const [saved, setSaved] = useState(() => readJSON(SAVED_KEY, []));
+  const [cloudBookmarks, setCloudBookmarks] = useState([]);
+  const [userReactions, setUserReactions] = useState({}); // postId -> type | null
+  const [comments, setComments] = useState({}); // postId -> comment[]
+  const [cloudReactions, setCloudReactions] = useState({}); // postId -> {uid: type}
+  const [detailPost, setDetailPost] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [active, setActive] = useState("Explore");
   const [category, setCategory] = useState("All");
   const [sort, setSort] = useState("Latest");
@@ -60,14 +77,19 @@ function App() {
   const [toast, setToast] = useState("");
   const [light, setLight] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
-  const [reacted, setReacted] = useState({});
   const [selectedPost, setSelectedPost] = useState(null);
   const [dailyIndex] = useState(() => new Date().getDate() % prompts.length);
+
+  const commentUnsubRef = useRef(null);
+  const reactionUnsubRef = useRef(null);
+
+  const effectiveSaved = firebaseConfigured ? cloudBookmarks : saved;
 
   useEffect(() => {
     if (!firebaseConfigured) { localStorage.setItem(STORAGE_KEY, JSON.stringify(posts)); return; }
     return onAuthStateChanged(auth, (user) => setCloudUser(user));
   }, []);
+
   useEffect(() => {
     if (!firebaseConfigured) return;
     setCloudStatus("connecting");
@@ -77,7 +99,55 @@ function App() {
       console.error("UNSAID Firestore feed error:", error); setCloudStatus("error");
     });
   }, [cloudUser?.uid]);
+
+  // Subscribe to the current user's bookmarks (Firebase only)
+  useEffect(() => {
+    if (!firebaseConfigured || !cloudUser) {
+      setCloudBookmarks([]);
+      return;
+    }
+    return subscribeToBookmarks(cloudUser.uid, (bookmarks) => {
+      setCloudBookmarks(bookmarks);
+    });
+  }, [cloudUser?.uid, firebaseConfigured]);
+
+  // When the selected post changes: load the post if needed, subscribe to comments & reactions
+  useEffect(() => {
+    if (commentUnsubRef.current) { commentUnsubRef.current(); commentUnsubRef.current = null; }
+    if (reactionUnsubRef.current) { reactionUnsubRef.current(); reactionUnsubRef.current = null; }
+
+    if (!selectedPost) {
+      setDetailPost(null);
+      setCloudReactions(prev => { const next = { ...prev }; delete next[selectedPost]; return next; });
+      return;
+    }
+
+    const found = posts.find(p => String(p.id) === String(selectedPost));
+    if (found) {
+      setDetailPost(found);
+    } else {
+      setDetailLoading(true);
+      getPostById(selectedPost).then((post) => {
+        setDetailPost(post);
+        setDetailLoading(false);
+      }).catch((err) => {
+        console.error("UNSAID detail load error:", err);
+        setDetailLoading(false);
+      });
+    }
+
+    if (firebaseConfigured && cloudUser) {
+      commentUnsubRef.current = subscribeToComments(selectedPost, (fresh) => {
+        setComments(prev => ({ ...prev, [selectedPost]: fresh }));
+      });
+      reactionUnsubRef.current = subscribeToReactions(selectedPost, (reactions) => {
+        setCloudReactions(prev => ({ ...prev, [selectedPost]: reactions }));
+      });
+    }
+  }, [selectedPost, posts, cloudUser, firebaseConfigured]);
+
   useEffect(() => { localStorage.setItem(SAVED_KEY, JSON.stringify(saved)); }, [saved]);
+
   useEffect(() => {
     const sync = () => {
       const match = window.location.pathname.match(/^\/post\/([^/]+)\/?$/);
@@ -96,19 +166,20 @@ function App() {
     window.history.pushState({}, "", `/post/${encodeURIComponent(id)}`);
     setSelectedPost(id); window.scrollTo({top:0,behavior:"smooth"});
   }
-  const currentPost = selectedPost ? posts.find(p=>String(p.id)===String(selectedPost)) : null;
+
+  const currentPost = selectedPost ? (detailPost || posts.find(p => String(p.id) === String(selectedPost))) : null;
 
   const visiblePosts = useMemo(() => {
     let result = posts.filter(p => (category==="All" || p.category===category) &&
       `${p.text} ${(p.tags||[]).join(" ")} ${p.category}`.toLowerCase().includes(query.toLowerCase()));
     if (active==="Confessions") result = result.filter(p=>p.category==="Confessions");
     if (active==="Discussions") result = result.filter(p=>["Questions","Unpopular Opinions","Society"].includes(p.category));
-    if (active==="Saved thoughts") result = result.filter(p=>saved.includes(p.id));
+    if (active==="Saved thoughts") result = result.filter(p=>effectiveSaved.includes(p.id));
     if (sort==="Most discussed") result = [...result].sort((a,b)=>(b.comments||0)-(a.comments||0));
     if (sort==="Trending") result = [...result].sort((a,b)=>totalReactions(b)-totalReactions(a));
     if (sort==="Latest") result = [...result].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
     return result;
-  }, [posts, category, query, sort, active, saved]);
+  }, [posts, category, query, sort, active, effectiveSaved]);
 
   function openComposer(post=null) {
     setEditingId(post?.id ?? null);
@@ -117,6 +188,7 @@ function App() {
     setDraftTags((post?.tags ?? []).join(", "));
     setComposer(true);
   }
+
   async function publish() {
     const clean = draft.trim();
     if (clean.length < 12) { notify("Add a little more context before publishing."); return; }
@@ -139,16 +211,97 @@ function App() {
       setComposer(false); setEditingId(null); setDraft(""); setDraftTags("");
     } catch (error) { console.error(error); notify(error.message || "Couldn't publish your thought. Please try again."); }
   }
-  function react(id,type) {
-    const key=`${id}-${type}`;
-    if(reacted[key]) return;
-    setReacted(old=>({...old,[key]:true}));
-    setPosts(old=>old.map(p=>p.id===id?{...p,reactions:{...p.reactions,[type]:(p.reactions?.[type]||0)+1}}:p));
+
+  // Persistent reaction: one per user per post. Clicking the same type removes it.
+  async function handleReact(postId, type) {
+    if (firebaseConfigured) {
+      if (!cloudUser) { notify("Your anonymous session is not ready."); return; }
+      try {
+        const current = userReactions[postId];
+        if (current === type) {
+          await removeReaction({ postId, uid: cloudUser.uid });
+          setUserReactions(old => ({ ...old, [postId]: null }));
+        } else {
+          await setReaction({ postId, uid: cloudUser.uid, type });
+          setUserReactions(old => ({ ...old, [postId]: type }));
+        }
+      } catch (error) {
+        console.error(error);
+        notify(error.message || "Couldn't update your reaction.");
+      }
+    } else {
+      const current = userReactions[postId];
+      if (current === type) {
+        setUserReactions(old => ({ ...old, [postId]: null }));
+        setPosts(old => old.map(p => p.id === postId ? {
+          ...p,
+          reactions: { ...p.reactions, [type]: Math.max(0, (p.reactions?.[type] || 0) - 1) }
+        } : p));
+      } else {
+        if (current) {
+          setPosts(old => old.map(p => p.id === postId ? {
+            ...p,
+            reactions: { ...p.reactions, [current]: Math.max(0, (p.reactions?.[current] || 0) - 1) }
+          } : p));
+        }
+        setUserReactions(old => ({ ...old, [postId]: type }));
+        setPosts(old => old.map(p => p.id === postId ? {
+          ...p,
+          reactions: { ...p.reactions, [type]: (p.reactions?.[type] || 0) + 1 }
+        } : p));
+      }
+    }
   }
-  function toggleSave(id) {
-    setSaved(old=>old.includes(id)?old.filter(x=>x!==id):[...old,id]);
-    notify(saved.includes(id)?"Removed from saved thoughts.":"Saved on this device.");
+
+  async function handleToggleSave(postId) {
+    if (firebaseConfigured) {
+      if (!cloudUser) { notify("Your anonymous session is not ready."); return; }
+      try {
+        const isSaved = cloudBookmarks.includes(postId);
+        if (isSaved) {
+          await removeBookmark({ uid: cloudUser.uid, postId });
+          notify("Removed from saved thoughts.");
+        } else {
+          await addBookmark({ uid: cloudUser.uid, postId });
+          notify("Saved to your thoughts.");
+        }
+      } catch (error) {
+        console.error(error);
+        notify(error.message || "Couldn't update your bookmark.");
+      }
+    } else {
+      const wasSaved = saved.includes(postId);
+      setSaved(old => old.includes(postId) ? old.filter(x => x !== postId) : [...old, postId]);
+      notify(wasSaved ? "Removed from saved thoughts." : "Saved on this device.");
+    }
   }
+
+  async function handleAddComment(postId, text, parentId = null) {
+    if (!cloudUser) { notify("Your anonymous session is not ready."); return; }
+    try {
+      await addComment({
+        postId,
+        uid: cloudUser.uid,
+        authorLabel: makeAnonymousId(),
+        text,
+        parentId,
+      });
+    } catch (error) {
+      console.error(error);
+      notify(error.message || "Couldn't post your comment.");
+    }
+  }
+
+  async function handleDeleteComment(postId, commentId) {
+    if (!cloudUser) { notify("Your anonymous session is not ready."); return; }
+    try {
+      await deleteComment({ postId, commentId, uid: cloudUser.uid });
+    } catch (error) {
+      console.error(error);
+      notify(error.message || "Couldn't delete the comment.");
+    }
+  }
+
   async function deletePost(id) {
     if (!window.confirm("Delete this thought? This cannot be undone.")) return;
     try {
@@ -161,11 +314,13 @@ function App() {
       notify("Your thought has been deleted.");
     } catch (error) { console.error(error); notify(error.message || "Couldn't delete this thought."); }
   }
+
   async function sharePost(id) {
     const url = `${window.location.origin}/post/${encodeURIComponent(id)}`;
     try { await navigator.clipboard.writeText(url); notify("Post link copied."); }
     catch { notify(url); }
   }
+
   function reportPost() { notify("Thank you. Reporting will be connected to moderation in a later phase."); }
 
   const navItems = [
@@ -194,19 +349,41 @@ function App() {
       </aside>
 
       <main className="main">
-        {currentPost ? <PostDetail post={currentPost} onBack={()=>goHome()} onReact={react} reacted={reacted} saved={saved} onSave={toggleSave} onShare={sharePost} onReport={reportPost} onEdit={()=>openComposer(currentPost)} onDelete={()=>deletePost(currentPost.id)}/> :
+        {currentPost ? (
+          <PostDetail
+            post={currentPost}
+            detailLoading={detailLoading}
+            onBack={()=>goHome()}
+            onReact={(id,type)=>handleReact(id,type)}
+            userReaction={cloudReactions[currentPost.id]?.[cloudUser?.uid] ?? userReactions[currentPost.id]}
+            reactions={currentPost.reactions}
+            saved={effectiveSaved.includes(currentPost.id)}
+            onSave={()=>handleToggleSave(currentPost.id)}
+            onShare={sharePost}
+            onReport={reportPost}
+            onEdit={()=>openComposer(currentPost)}
+            onDelete={()=>deletePost(currentPost.id)}
+            comments={comments[currentPost.id] ?? []}
+            onAddComment={(text, parentId)=>handleAddComment(currentPost.id, text, parentId)}
+            onDeleteComment={(commentId)=>handleDeleteComment(currentPost.id, commentId)}
+            authorLabel={currentPost.author}
+            currentUid={cloudUser?.uid ?? null}
+          />
+        ) : (
         <>
           <section className="hero"><div className="hero-glow glow-one"/><div className="hero-glow glow-two"/><div className="hero-content"><div className="eyebrow"><span className="eyebrow-dot"/> A SPACE BEYOND IDENTITY</div><h1>{pageTitle}<br/><em>Your thoughts deserve a voice.</em></h1><p>{pageSub}</p><div className="hero-buttons"><button className="primary-btn" onClick={()=>openComposer()}>Share your thoughts <ArrowUpRight size={16}/></button><button className="quiet-btn" onClick={()=>document.getElementById("community-feed")?.scrollIntoView({behavior:"smooth"})}>Explore the community <span>↓</span></button></div></div><div className="hero-note"><span className="note-star"><Sparkles size={15}/></span><span>NO JUDGMENT. NO PRESSURE.<br/><b>JUST YOU AND YOUR THOUGHTS.</b></span></div><div className="hero-orbit orbit-a"/><div className="hero-orbit orbit-b"/></section>
           <section className="daily-card"><div className="daily-icon"><Sparkles size={18}/></div><div className="daily-copy"><div className="section-kicker">A QUESTION TO SIT WITH</div><h3>{prompts[dailyIndex]}</h3><span>Today's quiet prompt · Take your time</span></div><button className="daily-cta" onClick={()=>openComposer()}>Reflect on this <ArrowUpRight size={15}/></button></section>
           <section className="feed-section" id="community-feed"><div className="feed-heading"><div><div className="section-kicker">THE COMMUNITY</div><h2>{active==="Saved thoughts"?"Your saved thoughts":"Thoughts, out in the open"}<span>.</span></h2><p>Little pieces of people, shared without names.</p></div><div className="feed-tools"><label className="searchbox"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Find a thought..." aria-label="Search thoughts"/></label><select value={sort} onChange={e=>setSort(e.target.value)} aria-label="Sort posts"><option>Latest</option><option>Trending</option><option>Most discussed</option></select></div></div>
             <div className="category-row">{categories.map(c=><button key={c} className={`category-pill ${category===c?"chosen":""}`} onClick={()=>setCategory(c)}>{c}</button>)}</div>
-            <div className="post-list">{visiblePosts.length?visiblePosts.map((p,i)=><PostCard key={p.id} post={p} index={i} reacted={reacted} saved={saved.includes(p.id)} onReact={react} onSave={()=>toggleSave(p.id)} onOpen={()=>openPost(p.id)} onReport={reportPost} onEdit={()=>openComposer(p)} onDelete={()=>deletePost(p.id)}/>):<div className="empty-state"><Search size={24}/><h3>No thoughts found</h3><p>Try another search or category. There may be a thought waiting for you.</p><button onClick={()=>{setQuery("");setCategory("All")}}>Clear filters</button></div>}</div>
+            <div className="post-list">{visiblePosts.length?visiblePosts.map((p,i)=><PostCard key={p.id} post={p} index={i} userReaction={userReactions[p.id]} isSaved={effectiveSaved.includes(p.id)} onReact={(id,type)=>handleReact(id,type)} onSave={()=>handleToggleSave(p.id)} onOpen={()=>openPost(p.id)} onReport={reportPost} onEdit={()=>openComposer(p)} onDelete={()=>deletePost(p.id)}/>):<div className="empty-state"><Search size={24}/><h3>No thoughts found</h3><p>Try another search or category. There may be a thought waiting for you.</p><button onClick={()=>{setQuery("");setCategory("All")}}>Clear filters</button></div>}</div>
             <div className="feed-end"><span/> THAT'S ALL FOR NOW <span/></div>
           </section>
           <section className="bottom-invite"><div className="invite-mark"><Feather size={22}/></div><div><h2>Something on your mind?</h2><p>It doesn't have to be perfect. It just has to be yours.</p></div><button className="primary-btn" onClick={()=>openComposer()}>Let it out <ArrowUpRight size={16}/></button></section>
-        </>}
-        <footer className="footer"><a className="brand small" href="/" onClick={e=>{e.preventDefault();goHome()}}><span className="brand-mark"><Feather size={15}/></span><span>UNSAID<span className="brand-dot">.</span></span></a><span>Your thoughts deserve a voice. {cloudStatus==="connected"?"Community connected":cloudStatus==="connecting"?"Connecting…":cloudStatus==="error"?"Connection issue":"Local preview mode"}</span><div><button onClick={()=>notify("About UNSAID: a space for thoughtful anonymous expression.")}>About</button><button onClick={()=>notify("Be kind. Do not share identifying details, threats, or targeted harassment.")}>Guidelines</button><button onClick={()=>notify("This prototype stores data locally in your browser.")}>Privacy</button></div></footer>
+        </>
+      )}
       </main>
+
+        <footer className="footer"><a className="brand small" href="/" onClick={e=>{e.preventDefault();goHome()}}><span className="brand-mark"><Feather size={15}/></span><span>UNSAID<span className="brand-dot">.</span></span></a><span>Your thoughts deserve a voice. {cloudStatus==="connected"?"Community connected":cloudStatus==="connecting"?"Connecting…":cloudStatus==="error"?"Connection issue":"Local preview mode"}</span><div><button onClick={()=>notify("About UNSAID: a space for thoughtful anonymous expression.")}>About</button><button onClick={()=>notify("Be kind. Do not share identifying details, threats, or targeted harassment.")}>Guidelines</button><button onClick={()=>notify("This prototype stores data locally in your browser.")}>Privacy</button></div></footer>
 
       <aside className="rightbar"><div className="right-intro"><div className="online-indicator"/> <span>A QUIETER KIND OF SOCIAL</span></div><div className="right-card welcome-card"><div className="welcome-art"><div className="welcome-orb"/><span>✳</span></div><div className="section-kicker">WELCOME TO UNSAID</div><h3>You can be heard<br/>without being known.</h3><p>Some things are easier to say when you don't have to explain who you are.</p><button onClick={()=>notify("UNSAID is currently a local prototype.")}>Get to know us <ArrowUpRight size={14}/></button></div><div className="right-card values-card"><div className="section-kicker">A FEW THINGS WE BELIEVE</div><div className="value-row"><span className="value-icon"><Heart size={16}/></span><div><b>Kindness comes first</b><p>Be gentle with someone's truth.</p></div></div><div className="value-row"><span className="value-icon"><LockKeyhole size={16}/></span><div><b>Privacy is a promise</b><p>Your identity isn't the story.</p></div></div><div className="value-row"><span className="value-icon"><MessageCircle size={16}/></span><div><b>Listen to understand</b><p>Not every thought needs a debate.</p></div></div></div><div className="right-quote"><span>“</span><p>There is a kind of courage in finally putting a feeling into words.</p><small>— A thought worth keeping</small></div><div className="right-bottom"><ShieldCheck size={14}/> Built around privacy, care & respect.</div></aside>
     </div>
@@ -216,26 +393,38 @@ function App() {
   </div>;
 }
 
-function PostCard({post,index,reacted,saved,onReact,onSave,onOpen,onReport,onEdit,onDelete}) {
+function PostCard({post,index,userReaction,isSaved,onReact,onSave,onOpen,onReport,onEdit,onDelete}) {
   return <article className="post-card">
     <div className="post-top"><div className="anon-avatar">{["✳","◌","✦","⌁"][index%4]}</div><div className="post-meta"><strong>{post.author||"Someone, somewhere"}</strong><span>{relativeTime(post.createdAt||Date.now())}{post.edited?" · edited":""} <i>·</i> <span className="post-category">{post.category}</span></span></div><div className="post-card-actions">{post.owner&&<><button className="icon-btn compact" title="Edit your post" onClick={onEdit}><Pencil size={14}/></button><button className="icon-btn compact" title="Delete your post" onClick={onDelete}><Trash2 size={14}/></button></>}<button className="icon-btn compact" title="Report post" onClick={onReport}><Flag size={14}/></button></div></div>
     <button className="post-open-area" onClick={onOpen} aria-label="Open post details"><p className="post-text">{post.text}</p></button>
     {!!post.tags?.length&&<div className="post-tags">{post.tags.map(tag=><span key={tag}><Hash size={12}/>{tag}</span>)}</div>}
-    <div className="post-bottom"><div className="reaction-group"><button className={reacted[`${post.id}-understand`]?"reacted":""} onClick={()=>onReact(post.id,"understand")}><span>♡</span> I understand <b>{post.reactions?.understand||0}</b></button><button className={reacted[`${post.id}-alone`]?"reacted":""} onClick={()=>onReact(post.id,"alone")}><span>✧</span> Not alone <b>{post.reactions?.alone||0}</b></button><button className={reacted[`${post.id}-feel`]?"reacted":""} onClick={()=>onReact(post.id,"feel")}><span>♥</span> Feel this <b>{post.reactions?.feel||0}</b></button></div><div className="post-actions"><button onClick={onOpen}><MessageCircle size={15}/>{post.comments||0}</button><button className={saved?"saved":""} aria-label="Save post" onClick={onSave}><Bookmark size={15}/></button></div></div>
+    <div className="post-bottom"><div className="reaction-group"><button className={userReaction==="understand"?"reacted":""} onClick={()=>onReact(post.id,"understand")}><span>♡</span> I understand <b>{post.reactions?.understand||0}</b></button><button className={userReaction==="alone"?"reacted":""} onClick={()=>onReact(post.id,"alone")}><span>✧</span> Not alone <b>{post.reactions?.alone||0}</b></button><button className={userReaction==="feel"?"reacted":""} onClick={()=>onReact(post.id,"feel")}><span>♥</span> Feel this <b>{post.reactions?.feel||0}</b></button></div><div className="post-actions"><button onClick={onOpen}><MessageCircle size={15}/>{post.comments||0}</button><button className={isSaved?"saved":""} aria-label="Save post" onClick={onSave}><Bookmark size={15}/></button></div></div>
   </article>;
 }
 
-function PostDetail({post,onBack,onReact,reacted,saved,onSave,onShare,onReport,onEdit,onDelete}) {
+function PostDetail({post,detailLoading,onBack,onReact,userReaction,reactions,saved,onSave,onShare,onReport,onEdit,onDelete,comments,onAddComment,onDeleteComment,authorLabel,currentUid}) {
   return <section className="detail-page">
-    <button className="back-link" onClick={onBack}><ArrowLeft size={16}/> Back to the community</button>
-    <div className="detail-kicker">A THOUGHT SHARED ANONYMOUSLY</div>
-    <article className="detail-card">
-      <div className="post-top"><div className="anon-avatar large">✳</div><div className="post-meta"><strong>{post.author||"Someone, somewhere"}</strong><span><Clock3 size={12}/> {relativeTime(post.createdAt||Date.now())} · {post.category}{post.edited?" · edited":""}</span></div><div className="post-card-actions">{post.owner&&<><button className="icon-btn compact" onClick={onEdit} title="Edit post"><Pencil size={15}/></button><button className="icon-btn compact" onClick={onDelete} title="Delete post"><Trash2 size={15}/></button></>}<button className="icon-btn compact" onClick={onReport} title="Report post"><Flag size={15}/></button></div></div>
-      <p className="detail-text">{post.text}</p>
-      {!!post.tags?.length&&<div className="post-tags">{post.tags.map(tag=><span key={tag}><Hash size={12}/>{tag}</span>)}</div>}
-      <div className="detail-actions"><div className="reaction-group"><button className={reacted[`${post.id}-understand`]?"reacted":""} onClick={()=>onReact(post.id,"understand")}><span>♡</span> I understand <b>{post.reactions?.understand||0}</b></button><button className={reacted[`${post.id}-alone`]?"reacted":""} onClick={()=>onReact(post.id,"alone")}><span>✧</span> Not alone <b>{post.reactions?.alone||0}</b></button><button className={reacted[`${post.id}-feel`]?"reacted":""} onClick={()=>onReact(post.id,"feel")}><span>♥</span> Feel this <b>{post.reactions?.feel||0}</b></button></div><div className="post-actions"><button className={saved?"saved":""} onClick={onSave}><Bookmark size={16}/>{saved?"Saved":"Save"}</button><button onClick={()=>onShare(post.id)}><Copy size={15}/>Copy link</button></div></div>
-    </article>
-    <div className="detail-comments"><div className="section-kicker">CONVERSATION</div><h3>Room for a response.</h3><p>Comments and anonymous replies arrive in Phase 3. For now, leave a kind reaction if this thought resonated with you.</p><div className="comments-placeholder"><MessageCircle size={19}/><span>{post.comments||0} community responses shown in this demo</span></div></div>
+    {detailLoading && <div className="detail-loading">Loading thought…</div>}
+    {!detailLoading && (
+    <>
+      <button className="back-link" onClick={onBack}><ArrowLeft size={16}/> Back to the community</button>
+      <div className="detail-kicker">A THOUGHT SHARED ANONYMOUSLY</div>
+      <article className="detail-card">
+        <div className="post-top"><div className="anon-avatar large">✳</div><div className="post-meta"><strong>{post.author||"Someone, somewhere"}</strong><span><Clock3 size={12}/> {relativeTime(post.createdAt||Date.now())} · {post.category}{post.edited?" · edited":""}</span></div><div className="post-card-actions">{post.owner&&<><button className="icon-btn compact" onClick={onEdit} title="Edit post"><Pencil size={15}/></button><button className="icon-btn compact" onClick={onDelete} title="Delete post"><Trash2 size={15}/></button></>}<button className="icon-btn compact" onClick={onReport} title="Report post"><Flag size={15}/></button></div></div>
+        <p className="detail-text">{post.text}</p>
+        {!!post.tags?.length&&<div className="post-tags">{post.tags.map(tag=><span key={tag}><Hash size={12}/>{tag}</span>)}</div>}
+        <div className="detail-actions"><div className="reaction-group"><button className={userReaction==="understand"?"reacted":""} onClick={()=>onReact(post.id,"understand")}><span>♡</span> I understand <b>{reactions?.understand||0}</b></button><button className={userReaction==="alone"?"reacted":""} onClick={()=>onReact(post.id,"alone")}><span>✧</span> Not alone <b>{reactions?.alone||0}</b></button><button className={userReaction==="feel"?"reacted":""} onClick={()=>onReact(post.id,"feel")}><span>♥</span> Feel this <b>{reactions?.feel||0}</b></button></div><div className="post-actions"><button className={saved?"saved":""} onClick={onSave}><Bookmark size={16}/>{saved?"Saved":"Save"}</button><button onClick={()=>onShare(post.id)}><Copy size={15}/>Copy link</button></div></div>
+      </article>
+      {!post.owner && (
+        <CommentSection
+          postId={post.id}
+          authorLabel={authorLabel}
+          uid={currentUid}
+          initialComments={comments}
+        />
+      )}
+    </>
+    )}
   </section>;
 }
 
