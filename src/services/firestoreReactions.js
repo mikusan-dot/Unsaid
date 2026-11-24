@@ -1,19 +1,21 @@
 import {
   collection, doc, onSnapshot, query, setDoc, deleteDoc,
-  getDoc, runTransaction, serverTimestamp,
+  getDoc, getDocs, runTransaction, serverTimestamp,
 } from "firebase/firestore";
 import { db } from "./firebase/client";
 
 const REACTION_TYPES = ["understand", "alone", "feel"];
 
-const reactionsCollection = (postId) => collection(db, "posts", postId, "reactions");
+// `target` is a post id (Phase 2) or a parent document path array.
+const parentRef = (target) => (Array.isArray(target) ? doc(db, ...target) : doc(db, "posts", target));
+const reactionsCollection = (target) => collection(parentRef(target), "reactions");
 
 /**
  * Subscribe to real-time reactions for a post.
  * Returns a map of uid -> reaction type, and an unsubscribe function.
  */
-export function subscribeToReactions(postId, onReactions, onError) {
-  const q = query(reactionsCollection(postId));
+export function subscribeToReactions(target, onReactions, onError) {
+  const q = query(reactionsCollection(target));
   return onSnapshot(q, (snap) => {
     const userReactions = {}; // uid -> type
     snap.docs.forEach((d) => {
@@ -27,8 +29,8 @@ export function subscribeToReactions(postId, onReactions, onError) {
 /**
  * Get the reaction type selected by a specific user on a post (null if none).
  */
-export async function getUserReaction(postId, uid) {
-  const snap = await getDoc(doc(db, "posts", postId, "reactions", uid));
+export async function getUserReaction(target, uid) {
+  const snap = await getDoc(doc(reactionsCollection(target), uid));
   return snap.exists() ? snap.data().type : null;
 }
 
@@ -37,13 +39,14 @@ export async function getUserReaction(postId, uid) {
  * One reaction per user per post (enforced by document id = uid).
  * Updates the post's reactions counter atomically via a transaction.
  */
-export async function setReaction({ postId, uid, type }) {
+export async function setReaction({ postId, parentPath, uid, type }) {
+  const target = parentPath ?? postId;
   if (!REACTION_TYPES.includes(type)) {
     throw new Error("Invalid reaction type.");
   }
 
-  const postRef = doc(db, "posts", postId);
-  const reactionRef = doc(db, "posts", postId, "reactions", uid);
+  const postRef = parentRef(target);
+  const reactionRef = doc(reactionsCollection(target), uid);
 
   await runTransaction(db, async (transaction) => {
     const postSnap = await transaction.get(postRef);
@@ -76,9 +79,10 @@ export async function setReaction({ postId, uid, type }) {
 /**
  * Remove a user's reaction from a post.
  */
-export async function removeReaction({ postId, uid }) {
-  const postRef = doc(db, "posts", postId);
-  const reactionRef = doc(db, "posts", postId, "reactions", uid);
+export async function removeReaction({ postId, parentPath, uid }) {
+  const target = parentPath ?? postId;
+  const postRef = parentRef(target);
+  const reactionRef = doc(reactionsCollection(target), uid);
 
   await runTransaction(db, async (transaction) => {
     const reactionSnap = await transaction.get(reactionRef);
@@ -104,8 +108,8 @@ export async function removeReaction({ postId, uid }) {
 /**
  * Get aggregated reaction counts for a post.
  */
-export async function getReactionCounts(postId) {
-  const snap = await getDocs(reactionsCollection(postId));
+export async function getReactionCounts(target) {
+  const snap = await getDocs(reactionsCollection(target));
   const counts = { understand: 0, alone: 0, feel: 0 };
   snap.docs.forEach((d) => {
     const type = d.data().type;

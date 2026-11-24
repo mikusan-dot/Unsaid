@@ -194,3 +194,55 @@ select { height: 2.5rem; padding: 0 var(--s3); border: 1px solid var(--control);
 .composer-foot span { color: var(--muted); font-size: .8125rem; }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+/* ---------- phase 3 additions (same tokens, no new colors) ---------- */
+code { font: .875em ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0 var(--s1); background: var(--surface); border-radius: 4px; }
+.btn.danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+.btn.danger:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.field-error { margin: var(--s2) 0 0; color: var(--danger); font-size: .875rem; }
+.load-more { display: flex; justify-content: center; padding: var(--s5) 0 0; }
+.skeletons { display: grid; gap: var(--s3); padding: var(--s5) 0; }
+.skeleton { height: 4.5rem; border-radius: var(--r-sm); background: var(--surface); animation: pulse 1.4s ease-in-out infinite; }
+.skeleton.short { height: 2rem; width: 60%; }
+@keyframes pulse { 50% { opacity: .5; } }
+.subnav { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3); margin-top: var(--s6); }
+.subnav .tabs { border: 0; padding: 0; gap: var(--s4); }
+.page-actions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s5); }
+.letter-title { font: 500 1.375rem/1.3 var(--serif); margin-top: var(--s2); color: var(--text); }
+.post-open:hover .letter-title { color: var(--accent); }
+.excerpt { display: block; margin-top: var(--s2); font: 400 1.0625rem/1.6 var(--serif); color: var(--soft); }
+.letter-body, .entry-body { white-space: pre-wrap; font: 400 1.25rem/1.7 var(--serif); margin-top: var(--s4); overflow-wrap: anywhere; }
+.detail h1.title { font: 400 clamp(1.75rem, 4.5vw, 2.5rem)/1.15 var(--serif); letter-spacing: -.01em; margin-top: var(--s3); }
+.answer-form { margin-top: var(--s5); }
+.answer-form textarea { min-height: 7rem; font: 400 1.0625rem/1.6 var(--serif); }
+.answers h2 { font: 500 1.375rem/1.3 var(--serif); margin-top: var(--s6); }
+.chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.chip { min-height: 2.25rem; padding: 0 var(--s3); border: 1px solid var(--control); border-radius: 999px; background: transparent; color: var(--soft); font-size: .875rem; }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.mood { color: var(--accent); }
+.notice { margin-top: var(--s4); padding: var(--s3) var(--s4); border-left: 2px solid var(--line); color: var(--soft); font-size: .9375rem; }
+.notice summary { cursor: pointer; font-weight: 600; color: var(--text); }
+.notice p { margin-top: var(--s2); }
+.entry-title { font: 500 1.375rem/1.3 var(--serif); margin-top: var(--s1); }
+.share-box { margin-top: var(--s4); }
+.share-box textarea { min-height: 9rem; }
+.dialog-foot .btn + .btn { margin-left: var(--s2); }
+.dialog-actions { display: flex; gap: var(--s2); }
+.past-list { list-style: none; margin: 0; padding: 0; }
+.past-list li { border-bottom: 1px solid var(--line); }
+.past-list button { display: block; width: 100%; padding: var(--s4) 0; border: 0; background: transparent; text-align: left; }
+.past-list small { display: block; color: var(--muted); }
+.past-list span { font: italic 400 1.1875rem/1.4 var(--serif); }
+.past-list button:hover span { color: var(--accent); }
+.count-line { color: var(--muted); font-size: .9375rem; margin-top: var(--s2); }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+@media (max-width: 30rem) {
+  .subnav .feed-tools { flex-wrap: wrap; width: 100%; }
+  .subnav .searchbox { flex: 1 1 100%; }
+  .subnav .searchbox input { width: 100%; }
+  .subnav select { flex: 1 1 8rem; }
+  .post-foot .acts { margin-left: calc(var(--s3) * -1); }
+}
+
+.comment-foot { display: flex; align-items: center; justify-content: space-between; margin-top: var(--s2); color: var(--muted); }
+.answer-form textarea { display: block; width: 100%; padding: var(--s3); border: 1px solid var(--control); border-radius: var(--r-sm); background: var(--surface); color: var(--text); resize: vertical; }

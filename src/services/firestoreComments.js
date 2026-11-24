@@ -8,15 +8,19 @@ const MAX_COMMENT_LENGTH = 500;
 const MIN_COMMENT_LENGTH = 1;
 const COMMENTS_PER_POST = 50;
 
-const commentsCollection = (postId) => collection(db, "posts", postId, "comments");
+// `target` is either a post id (Phase 2, unchanged) or a parent document path
+// array such as ["letters", id] or ["questions", qid, "answers", aid].
+const parentRef = (target) => (Array.isArray(target) ? doc(db, ...target) : doc(db, "posts", target));
+const parentId = (target) => (Array.isArray(target) ? target[target.length - 1] : target);
+const commentsCollection = (target) => collection(parentRef(target), "comments");
 
 /**
  * Subscribe to real-time comments for a post (top-level + replies, one level).
  * Returns an unsubscribe function.
  */
-export function subscribeToComments(postId, onComments, onError) {
+export function subscribeToComments(target, onComments, onError) {
   const q = query(
-    commentsCollection(postId),
+    commentsCollection(target),
     orderBy("createdAt", "asc"),
     limit(COMMENTS_PER_POST)
   );
@@ -41,7 +45,8 @@ export function subscribeToComments(postId, onComments, onError) {
  * Add a top-level comment or a reply (parentId set). Updates the post's
  * comments counter atomically via a Firestore transaction.
  */
-export async function addComment({ postId, uid, authorLabel, text, parentId = null }) {
+export async function addComment({ postId, parentPath, uid, authorLabel, text, parentId: replyTo = null }) {
+  const target = parentPath ?? postId;
   const clean = text.trim();
   if (!clean || clean.length < MIN_COMMENT_LENGTH) {
     throw new Error("Comment cannot be empty.");
@@ -53,7 +58,7 @@ export async function addComment({ postId, uid, authorLabel, text, parentId = nu
     throw new Error("Author label is required.");
   }
 
-  const postRef = doc(db, "posts", postId);
+  const postRef = parentRef(target);
 
   await runTransaction(db, async (transaction) => {
     const postSnap = await transaction.get(postRef);
@@ -61,14 +66,14 @@ export async function addComment({ postId, uid, authorLabel, text, parentId = nu
       throw new Error("Post not found.");
     }
 
-    const commentRef = doc(commentsCollection(postId));
+    const commentRef = doc(commentsCollection(target));
     transaction.set(commentRef, {
-      postId,
+      postId: parentId(target),
       uid,
       authorLabel: authorLabel.trim(),
       text: clean,
       createdAt: serverTimestamp(),
-      parentId: parentId || null,
+      parentId: replyTo || null,
     });
 
     const nextCount = (postSnap.data().comments ?? 0) + 1;
@@ -80,9 +85,10 @@ export async function addComment({ postId, uid, authorLabel, text, parentId = nu
  * Delete a comment (or reply). Only the author (uid match) may delete.
  * Decrements the post's comments counter atomically.
  */
-export async function deleteComment({ postId, commentId, uid }) {
-  const postRef = doc(db, "posts", postId);
-  const commentRef = doc(db, "posts", postId, "comments", commentId);
+export async function deleteComment({ postId, parentPath, commentId, uid }) {
+  const target = parentPath ?? postId;
+  const postRef = parentRef(target);
+  const commentRef = doc(commentsCollection(target), commentId);
 
   await runTransaction(db, async (transaction) => {
     const commentSnap = await transaction.get(commentRef);
@@ -107,7 +113,7 @@ export async function deleteComment({ postId, commentId, uid }) {
 /**
  * Get the total comment count for a post (derived from the comments subcollection).
  */
-export async function getCommentCount(postId) {
-  const snap = await getDocs(commentsCollection(postId));
+export async function getCommentCount(target) {
+  const snap = await getDocs(commentsCollection(target));
   return snap.size;
 }

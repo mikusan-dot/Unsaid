@@ -1,92 +1,125 @@
 rules_version = '2';
+// UNSAID Firestore rules (Phases 2 and 3).
+// Test in the Firebase emulator before deploying (see README). Spark plan: no paid features used.
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ========================================================================
-    // POSTS
-    // Public read. Owner (tracked in postOwners) can create, update, delete.
-    // Field validation on create/update. Unexpected fields rejected.
-    // ========================================================================
+    // ===================================================================== helpers
+    function signedIn() { return request.auth != null; }
+
+    // Ownership: postOwners/{contentId} = { uid, createdAt [, kind] }. Public documents never store the author's uid.
+    function isOwnerOf(id) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/postOwners/$(id))
+        && get(/databases/$(database)/documents/postOwners/$(id)).data.uid == request.auth.uid;
+    }
+    function isOwnerAfter(id) {
+      return getAfter(/databases/$(database)/documents/postOwners/$(id)).data.uid == request.auth.uid;
+    }
+
+    function str(v, min, max) { return v is string && v.size() >= min && v.size() <= max; }
+    function zeroReactions(r) { return r == {'understand': 0, 'alone': 0, 'feel': 0}; }
+    function moodOk(m) { return m in ['','Calm','Heavy','Hopeful','Restless','Grateful','Numb','Tender']; }
+
+    // Counters are changed by Phase 2's transactions (reactions: +/-1 per change, comments: +/-1).
+    // These bounds stop a single write from inflating a counter.
+    function reactionsStepOk() {
+      return request.resource.data.reactions.keys().hasOnly(['understand','alone','feel'])
+        && request.resource.data.reactions.keys().hasAll(['understand','alone','feel'])
+        && request.resource.data.reactions.understand is int && request.resource.data.reactions.alone is int && request.resource.data.reactions.feel is int
+        && request.resource.data.reactions.understand >= 0 && request.resource.data.reactions.alone >= 0 && request.resource.data.reactions.feel >= 0
+        && request.resource.data.reactions.understand - resource.data.reactions.understand >= -1
+        && request.resource.data.reactions.understand - resource.data.reactions.understand <= 1
+        && request.resource.data.reactions.alone - resource.data.reactions.alone >= -1
+        && request.resource.data.reactions.alone - resource.data.reactions.alone <= 1
+        && request.resource.data.reactions.feel - resource.data.reactions.feel >= -1
+        && request.resource.data.reactions.feel - resource.data.reactions.feel <= 1
+        && (request.resource.data.reactions.understand + request.resource.data.reactions.alone + request.resource.data.reactions.feel)
+           - (resource.data.reactions.understand + resource.data.reactions.alone + resource.data.reactions.feel) >= -1
+        && (request.resource.data.reactions.understand + request.resource.data.reactions.alone + request.resource.data.reactions.feel)
+           - (resource.data.reactions.understand + resource.data.reactions.alone + resource.data.reactions.feel) <= 1;
+    }
+    function stepOk(field) {
+      return request.resource.data[field] is int && request.resource.data[field] >= 0
+        && (request.resource.data[field] == resource.data[field] + 1 || request.resource.data[field] == resource.data[field] - 1);
+    }
+    // `fields` is the list of counter fields this kind of document has.
+    function counterOnlyUpdate(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields)
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['reactions']) || reactionsStepOk())
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['comments']) || stepOk('comments'))
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['answerCount']) || stepOk('answerCount'));
+    }
+    function reactionDocOk(uid) {
+      return request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['type','createdAt','updatedAt'])
+        && request.resource.data.keys().hasAll(['type','createdAt','updatedAt'])
+        && request.resource.data.type in ['understand','alone','feel']
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+    }
+
+    // ===================================================================== PHASE 2
+    // POSTS: public read; owner (via postOwners) edits/deletes; anyone signed in may step the counters.
     match /posts/{postId} {
       allow read: if true;
 
       allow create: if request.auth != null
-        // Exact field set — no unexpected fields
-        && request.resource.data.keys() == [
-          'text', 'category', 'tags', 'authorLabel',
-          'comments', 'reactions', 'createdAt', 'edited'
-        ]
+        && request.resource.data.keys().hasOnly(['text','category','tags','authorLabel','comments','reactions','createdAt','edited'])
+        && request.resource.data.keys().hasAll(['text','category','tags','authorLabel','comments','reactions','createdAt','edited'])
         && request.resource.data.text is string
         && request.resource.data.text.size() >= 12
         && request.resource.data.text.size() <= 1200
         && request.resource.data.category is string
         && request.resource.data.category.size() > 0
         && request.resource.data.authorLabel is string
-        && request.resource.data.authorLabel.size() > 0
-        && request.resource.data.authorLabel.matches(/^Anonymous #[0-9]{4}$/)
+        && request.resource.data.authorLabel.matches('^Anonymous #[0-9]{4}$')
         && request.resource.data.tags is list
         && request.resource.data.tags.size() <= 5
-        && request.resource.data.comments is number
         && request.resource.data.comments == 0
-        && request.resource.data.reactions is map
-        && request.resource.data.reactions.keys() == ['understand', 'alone', 'feel']
-        && request.resource.data.reactions.understand == 0
-        && request.resource.data.reactions.alone == 0
-        && request.resource.data.reactions.feel == 0
+        && zeroReactions(request.resource.data.reactions)
         && request.resource.data.createdAt is timestamp
         && request.resource.data.edited is bool;
 
-      allow update: if request.auth != null
-        // Only the post owner (via postOwners) can update
-        && exists(/databases/$(database)/documents/postOwners/$(postId))
-        && get(/databases/$(database)/documents/postOwners/$(postId)).data.uid == request.auth.uid
-        // Only allowed fields may change
-        && !(request.resource.data.diff(resource.data).affectedKeys()
-          - ['text', 'category', 'tags', 'edited', 'updatedAt', 'comments', 'reactions']
-        ).size() > 0
-        && request.resource.data.text is string
-        && request.resource.data.text.size() >= 12
-        && request.resource.data.text.size() <= 1200
-        // Immutable fields protected
-        && request.resource.data.createdAt == resource.data.createdAt
-        && request.resource.data.authorLabel == resource.data.authorLabel
-        && request.resource.data.uid == resource.data.uid;
+      allow update: if request.auth != null && (
+        // the owner edits their post (same allowed fields as before)
+        (isOwnerOf(postId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text','category','tags','edited','updatedAt','comments','reactions'])
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 12
+          && request.resource.data.text.size() <= 1200
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.authorLabel == resource.data.authorLabel)
+        // anyone signed in: bounded counter changes made by the comment/reaction transactions
+        || counterOnlyUpdate(['comments','reactions'])
+      );
 
-      allow delete: if request.auth != null
-        && exists(/databases/$(database)/documents/postOwners/$(postId))
-        && get(/databases/$(database)/documents/postOwners/$(postId)).data.uid == request.auth.uid;
+      allow delete: if isOwnerOf(postId);
     }
 
-    // ========================================================================
-    // POST OWNERS — private ownership tracking
-    // Only the owning UID can read/create/delete their own records.
-    // ========================================================================
+    // POST OWNERS: private. Only the owning uid can read/create/delete. `kind` is optional (Phase 3 content).
     match /postOwners/{postId} {
       allow read: if request.auth != null && request.auth.uid == resource.data.uid;
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.uid
-        && request.resource.data.keys() == ['uid', 'createdAt']
+        && request.resource.data.keys().hasOnly(['uid','createdAt','kind'])
+        && request.resource.data.keys().hasAll(['uid','createdAt'])
         && request.resource.data.uid is string
         && request.resource.data.uid.size() > 0
-        && request.resource.data.createdAt is timestamp;
+        && request.resource.data.createdAt is timestamp
+        && (!('kind' in request.resource.data) || request.resource.data.kind in ['letter','question','answer','thought']);
       allow update: if false;
       allow delete: if request.auth != null && request.auth.uid == resource.data.uid;
     }
 
-    // ========================================================================
-    // COMMENTS — posts/{postId}/comments/{commentId}
-    // Public read. Authenticated users can create. Only the author can delete.
-    // Reply nesting limited to one level (parent must be top-level).
-    // ========================================================================
+    // COMMENTS on posts (one level of replies)
     match /posts/{postId}/comments/{commentId} {
       allow read: if true;
-
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.uid
         && request.resource.data.postId == postId
-        && request.resource.data.keys() == [
-          'postId', 'uid', 'authorLabel', 'text', 'createdAt', 'parentId'
-        ]
+        && request.resource.data.keys().hasOnly(['postId','uid','authorLabel','text','createdAt','parentId'])
+        && request.resource.data.keys().hasAll(['postId','uid','authorLabel','text','createdAt','parentId'])
         && request.resource.data.uid is string
         && request.resource.data.uid.size() > 0
         && request.resource.data.authorLabel is string
@@ -94,62 +127,285 @@ service cloud.firestore {
         && request.resource.data.text is string
         && request.resource.data.text.size() >= 1
         && request.resource.data.text.size() <= 500
-        && (
-          request.resource.data.parentId == null
-          || (
-            request.resource.data.parentId is string
-            && get(/databases/$(database)/documents/posts/$(postId)/comments/$(request.resource.data.parentId)).data.parentId == null
-          )
-        );
-
+        && (request.resource.data.parentId == null
+            || (request.resource.data.parentId is string
+                && get(/databases/$(database)/documents/posts/$(postId)/comments/$(request.resource.data.parentId)).data.parentId == null));
       allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
     }
 
-    // ========================================================================
-    // REACTIONS — posts/{postId}/reactions/{uid}
-    // Public read. Document ID is the UID, so impersonation is prevented.
-    // One reaction per user per post. Only the owner can create/update/delete.
-    // ========================================================================
+    // REACTIONS on posts: one per user (document id = uid)
     match /posts/{postId}/reactions/{uid} {
       allow read: if true;
-
-      allow create: if request.auth != null
-        && request.auth.uid == uid
-        && request.resource.data.keys() == ['type', 'createdAt', 'updatedAt']
-        && request.resource.data.type in ['understand', 'alone', 'feel']
-        && request.resource.data.createdAt is timestamp
-        && request.resource.data.updatedAt is timestamp;
-
-      allow update: if request.auth != null
-        && request.auth.uid == uid
-        && request.resource.data.keys() == ['type', 'createdAt', 'updatedAt']
-        && request.resource.data.type in ['understand', 'alone', 'feel']
-        && request.resource.data.createdAt is timestamp
-        && request.resource.data.updatedAt is timestamp;
-
+      allow create, update: if reactionDocOk(uid);
       allow delete: if request.auth != null && request.auth.uid == uid;
     }
 
-    // ========================================================================
-    // BOOKMARKS — users/{uid}/bookmarks/{postId}
-    // Private to the owner. Document ID is the postId.
-    // ========================================================================
+    // BOOKMARKS: private to the owner; document id = the saved item's key (post id, or "<kind>_<id>")
     match /users/{uid}/bookmarks/{postId} {
       allow read: if request.auth != null && request.auth.uid == uid;
       allow create: if request.auth != null
         && request.auth.uid == uid
-        && request.resource.data.keys() == ['postId', 'createdAt']
+        && request.resource.data.keys().hasOnly(['postId','createdAt'])
+        && request.resource.data.keys().hasAll(['postId','createdAt'])
         && request.resource.data.postId == postId
         && request.resource.data.createdAt is timestamp;
       allow update: if false;
       allow delete: if request.auth != null && request.auth.uid == uid;
     }
 
-    // ========================================================================
-    // BLOCK ALL OTHER COLLECTIONS / DOCUMENTS
-    // ========================================================================
-    match /{document=**} {
-      allow read, write: if false;
+    // ===================================================================== PHASE 3
+
+    match /letters/{id} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['title', 'body', 'category', 'authorLabel', 'comments', 'reactions', 'createdAt'])
+        && request.resource.data.keys().hasAll(['title', 'body', 'category', 'authorLabel', 'comments', 'reactions', 'createdAt'])
+        && str(request.resource.data.title, 3, 100)
+        && str(request.resource.data.body, 30, 5000)
+        && request.resource.data.category in ['Someone I Miss','To My Past Self','To My Future Self','Things I Never Said','Unspoken Love','Goodbye Letters','Unsent Apologies']
+        && request.resource.data.comments == 0
+        && zeroReactions(request.resource.data.reactions)
+        && request.resource.data.authorLabel is string
+        && request.resource.data.authorLabel.matches('^Anonymous #[0-9]{4}$')
+        && request.resource.data.createdAt == request.time
+        && isOwnerAfter(id);
+      // anyone signed in may nudge the counters (bounded, see helpers); nothing else changes
+      allow update: if request.auth != null && counterOnlyUpdate(['comments','reactions']);
+      allow delete: if isOwnerOf(id);
     }
+
+    match /questions/{id} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['title','details','category','authorLabel','answerCount','edited','createdAt'])
+        && request.resource.data.keys().hasAll(['title','details','category','authorLabel','answerCount','edited','createdAt'])
+        && str(request.resource.data.title, 10, 150)
+        && str(request.resource.data.details, 0, 1000)
+        && request.resource.data.category in ['Relationships','Friendship','University Life','Career','Personal Growth','Life Advice','Random Questions']
+        && request.resource.data.authorLabel.matches('^Anonymous #[0-9]{4}$')
+        && request.resource.data.answerCount == 0
+        && request.resource.data.edited == false
+        && request.resource.data.createdAt == request.time
+        && isOwnerAfter(id);
+      allow update: if request.auth != null && (
+        (isOwnerOf(id)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title','details','category','edited','updatedAt'])
+          && str(request.resource.data.title, 10, 150)
+          && str(request.resource.data.details, 0, 1000)
+          && request.resource.data.category in ['Relationships','Friendship','University Life','Career','Personal Growth','Life Advice','Random Questions']
+          && request.resource.data.edited == true)
+        || counterOnlyUpdate(['answerCount'])
+      );
+      allow delete: if isOwnerOf(id);
+    }
+
+    match /questions/{qid}/answers/{id} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && exists(/databases/$(database)/documents/questions/$(qid))
+        && request.resource.data.keys().hasOnly(['text','authorLabel','reactions','comments','createdAt'])
+        && request.resource.data.keys().hasAll(['text','authorLabel','reactions','comments','createdAt'])
+        && str(request.resource.data.text, 2, 1500)
+        && request.resource.data.authorLabel.matches('^Anonymous #[0-9]{4}$')
+        && zeroReactions(request.resource.data.reactions)
+        && request.resource.data.comments == 0
+        && request.resource.data.createdAt == request.time
+        && isOwnerAfter(id);
+      allow update: if request.auth != null && counterOnlyUpdate(['comments','reactions']);
+      allow delete: if isOwnerOf(id);
+    }
+
+    match /midnightThoughts/{id} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['text', 'mood', 'category', 'authorLabel', 'comments', 'reactions', 'createdAt'])
+        && request.resource.data.keys().hasAll(['text', 'mood', 'category', 'authorLabel', 'comments', 'reactions', 'createdAt'])
+        && str(request.resource.data.text, 10, 280)
+        && moodOk(request.resource.data.mood)
+        && request.resource.data.category in ['Loneliness','Hope','Anxiety','Gratitude','Reflection']
+        && request.resource.data.comments == 0
+        && zeroReactions(request.resource.data.reactions)
+        && request.resource.data.authorLabel is string
+        && request.resource.data.authorLabel.matches('^Anonymous #[0-9]{4}$')
+        && request.resource.data.createdAt == request.time
+        && isOwnerAfter(id);
+      // anyone signed in may nudge the counters (bounded, see helpers); nothing else changes
+      allow update: if request.auth != null && counterOnlyUpdate(['comments','reactions']);
+      allow delete: if isOwnerOf(id);
+    }
+
+    // DAILY QUESTIONS. Prompts are managed by the project owner; clients cannot write them.
+    match /dailyPrompts/{dateId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    // Server clock: write serverTimestamp() to your own doc and read it back.
+    match /clock/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['t'])
+        && request.resource.data.t == request.time;
+      allow delete: if false;
+    }
+    // One private marker per (prompt, anonymous session): its existence blocks a second response.
+    match /dailyMarkers/{markerId} {
+      allow read: if request.auth != null && markerId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}_' + request.auth.uid + '$');
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['promptId','responseId','createdAt'])
+        && request.resource.data.keys().hasAll(['promptId','responseId','createdAt'])
+        && markerId == request.resource.data.promptId + '_' + request.auth.uid
+        && request.resource.data.createdAt == request.time;
+      allow update: if false;
+      allow delete: if request.auth != null && markerId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}_' + request.auth.uid + '$');
+    }
+    match /dailyResponses/{id} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['promptId','text','authorLabel','reactions','comments','createdAt'])
+        && request.resource.data.keys().hasAll(['promptId','text','authorLabel','reactions','comments','createdAt'])
+        && exists(/databases/$(database)/documents/dailyPrompts/$(request.resource.data.promptId))
+        && str(request.resource.data.text, 2, 1000)
+        && request.resource.data.authorLabel.matches('^Anonymous #[0-9]{4}$')
+        && zeroReactions(request.resource.data.reactions)
+        && request.resource.data.comments == 0
+        && request.resource.data.createdAt == request.time
+        && !exists(/databases/$(database)/documents/dailyMarkers/$(request.resource.data.promptId + '_' + request.auth.uid))
+        && getAfter(/databases/$(database)/documents/dailyMarkers/$(request.resource.data.promptId + '_' + request.auth.uid)).data.responseId == id;
+      allow update: if request.auth != null && counterOnlyUpdate(['comments','reactions']);
+      allow delete: if request.auth != null
+        && get(/databases/$(database)/documents/dailyMarkers/$(resource.data.promptId + '_' + request.auth.uid)).data.responseId == id;
+    }
+
+    // PRIVATE JOURNAL: only the signed-in owner (uid in the path) can touch these documents.
+    match /journals/{uid}/entries/{entryId} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['title','body','mood','createdAt','updatedAt'])
+        && request.resource.data.keys().hasAll(['title','body','mood','createdAt','updatedAt'])
+        && str(request.resource.data.title, 0, 120)
+        && str(request.resource.data.body, 1, 20000)
+        && moodOk(request.resource.data.mood)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['title','body','mood','createdAt','updatedAt'])
+        && str(request.resource.data.title, 0, 120)
+        && str(request.resource.data.body, 1, 20000)
+        && moodOk(request.resource.data.mood)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // comments under /letters/{id}: same shape and behaviour as posts/{postId}/comments
+    match /letters/{id}/comments/{commentId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.uid
+        && request.resource.data.postId == id
+        && request.resource.data.keys().hasOnly(['postId','uid','authorLabel','text','createdAt','parentId'])
+        && request.resource.data.keys().hasAll(['postId','uid','authorLabel','text','createdAt','parentId'])
+        && request.resource.data.uid is string && request.resource.data.uid.size() > 0
+        && request.resource.data.authorLabel is string && request.resource.data.authorLabel.size() > 0
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 1 && request.resource.data.text.size() <= 500
+        && request.resource.data.createdAt == request.time
+        && (request.resource.data.parentId == null
+            || (request.resource.data.parentId is string
+                && get(/databases/$(database)/documents/letters/$(id)/comments/$(request.resource.data.parentId)).data.parentId == null));
+      allow update: if false;
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // reactions under /letters/{id}: one per user (document id = uid), as in Phase 2
+    match /letters/{id}/reactions/{uid} {
+      allow read: if true;
+      allow create, update: if reactionDocOk(uid);
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // comments under /midnightThoughts/{id}: same shape and behaviour as posts/{postId}/comments
+    match /midnightThoughts/{id}/comments/{commentId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.uid
+        && request.resource.data.postId == id
+        && request.resource.data.keys().hasOnly(['postId','uid','authorLabel','text','createdAt','parentId'])
+        && request.resource.data.keys().hasAll(['postId','uid','authorLabel','text','createdAt','parentId'])
+        && request.resource.data.uid is string && request.resource.data.uid.size() > 0
+        && request.resource.data.authorLabel is string && request.resource.data.authorLabel.size() > 0
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 1 && request.resource.data.text.size() <= 500
+        && request.resource.data.createdAt == request.time
+        && (request.resource.data.parentId == null
+            || (request.resource.data.parentId is string
+                && get(/databases/$(database)/documents/midnightThoughts/$(id)/comments/$(request.resource.data.parentId)).data.parentId == null));
+      allow update: if false;
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // reactions under /midnightThoughts/{id}: one per user (document id = uid), as in Phase 2
+    match /midnightThoughts/{id}/reactions/{uid} {
+      allow read: if true;
+      allow create, update: if reactionDocOk(uid);
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // comments under /questions/{qid}/answers/{id}: same shape and behaviour as posts/{postId}/comments
+    match /questions/{qid}/answers/{id}/comments/{commentId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.uid
+        && request.resource.data.postId == id
+        && request.resource.data.keys().hasOnly(['postId','uid','authorLabel','text','createdAt','parentId'])
+        && request.resource.data.keys().hasAll(['postId','uid','authorLabel','text','createdAt','parentId'])
+        && request.resource.data.uid is string && request.resource.data.uid.size() > 0
+        && request.resource.data.authorLabel is string && request.resource.data.authorLabel.size() > 0
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 1 && request.resource.data.text.size() <= 500
+        && request.resource.data.createdAt == request.time
+        && (request.resource.data.parentId == null
+            || (request.resource.data.parentId is string
+                && get(/databases/$(database)/documents/questions/$(qid)/answers/$(id)/comments/$(request.resource.data.parentId)).data.parentId == null));
+      allow update: if false;
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // reactions under /questions/{qid}/answers/{id}: one per user (document id = uid), as in Phase 2
+    match /questions/{qid}/answers/{id}/reactions/{uid} {
+      allow read: if true;
+      allow create, update: if reactionDocOk(uid);
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // comments under /dailyResponses/{id}: same shape and behaviour as posts/{postId}/comments
+    match /dailyResponses/{id}/comments/{commentId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.uid
+        && request.resource.data.postId == id
+        && request.resource.data.keys().hasOnly(['postId','uid','authorLabel','text','createdAt','parentId'])
+        && request.resource.data.keys().hasAll(['postId','uid','authorLabel','text','createdAt','parentId'])
+        && request.resource.data.uid is string && request.resource.data.uid.size() > 0
+        && request.resource.data.authorLabel is string && request.resource.data.authorLabel.size() > 0
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 1 && request.resource.data.text.size() <= 500
+        && request.resource.data.createdAt == request.time
+        && (request.resource.data.parentId == null
+            || (request.resource.data.parentId is string
+                && get(/databases/$(database)/documents/dailyResponses/$(id)/comments/$(request.resource.data.parentId)).data.parentId == null));
+      allow update: if false;
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+
+    // reactions under /dailyResponses/{id}: one per user (document id = uid), as in Phase 2
+    match /dailyResponses/{id}/reactions/{uid} {
+      allow read: if true;
+      allow create, update: if reactionDocOk(uid);
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ===================================================================== everything else is denied
+    match /{document=**} { allow read, write: if false; }
   }
 }

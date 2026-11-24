@@ -1,5 +1,5 @@
 import {
-  collection, doc, onSnapshot, query, setDoc, deleteDoc, getDoc,
+  collection, doc, onSnapshot, query, setDoc, deleteDoc, getDoc, serverTimestamp,
 } from "firebase/firestore";
 import { db } from "./firebase/client";
 
@@ -45,3 +45,10 @@ export async function isBookmarked({ uid, postId }) {
   const snap = await getDoc(doc(db, "users", uid, "bookmarks", postId));
   return snap.exists();
 }
+
+/**
+ * Bookmark keys. Phase 2 posts keep their plain id. Other content uses "<kind>_<id>"
+ * (Firestore auto-ids contain no underscore, so keys never collide). The stored shape
+ * is unchanged, so existing bookmark rules still apply.
+ */
+export const bookmarkKey = (kind, id) => (kind === "post" ? id : `${kind}_${id}`);

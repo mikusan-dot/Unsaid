@@ -23,6 +23,7 @@ function formatTime(timestamp) {
 
 export default function CommentSection({
   postId,
+  parentPath,
   authorLabel,
   uid: currentUid,
   initialComments,
@@ -43,7 +44,7 @@ export default function CommentSection({
       return;
     }
     const unsubscribe = subscribeToComments(
-      postId,
+      parentPath ?? postId,
       (fresh) => {
         setComments(fresh);
         setLoading(false);
@@ -57,7 +58,7 @@ export default function CommentSection({
       }
     );
     return unsubscribe;
-  }, [postId, currentUid, onCountChange]);
+  }, [postId, parentPath, currentUid, onCountChange]);
 
   const isOwner = useCallback((comment) => currentUid && comment.uid === currentUid, [currentUid]);
 
@@ -90,6 +91,7 @@ export default function CommentSection({
       await ensureAnonymousSession();
       await addComment({
         postId,
+        parentPath,
         uid: currentUid,
         authorLabel,
         text: clean,
@@ -118,6 +120,7 @@ export default function CommentSection({
       await ensureAnonymousSession();
       await addComment({
         postId,
+        parentPath,
         uid: currentUid,
         authorLabel,
         text: clean,
@@ -136,7 +139,7 @@ export default function CommentSection({
     if (!window.confirm("Delete this reply? This cannot be undone.")) return;
     if (!currentUid) return;
     try {
-      await deleteComment({ postId, commentId, uid: currentUid });
+      await deleteComment({ postId, parentPath, commentId, uid: currentUid });
     } catch (err) {
       setError(err.message || "Couldn't delete the reply.");
     }
@@ -160,7 +163,7 @@ export default function CommentSection({
                 <span className="author">{comment.authorLabel}</span>
                 <span className="time">{formatTime(comment.createdAt)}</span>
                 <span className="reply-count">
-                  {repliesByParent[comment.id]?.length} reply{repliesByParent[comment.id].length !== 1 ? "s" : ""}
+                  {repliesByParent[comment.id]?.length ?? 0} {(repliesByParent[comment.id]?.length ?? 0) === 1 ? "reply" : "replies"}
                 </span>
               </div>
               <p className="comment-text">{comment.text}</p>
@@ -196,6 +199,7 @@ export default function CommentSection({
                       <button
                         type="submit"
                         className="reply-send"
+                        aria-label="Send reply to this comment"
                         disabled={!replyDraft.trim().length || submitting}
                       >
                         <Send size={14} aria-hidden="true" />
@@ -246,6 +250,7 @@ export default function CommentSection({
           <button
             type="submit"
             className="btn reply-send"
+            aria-label="Send reply"
             disabled={!draft.trim().length || submitting}
           >
             <Send size={14} aria-hidden="true" />

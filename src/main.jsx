@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Compass, MessageCircle, MoonStar, Mail, Heart, Search, Sun, Menu, X, Bookmark, Flag,
-  PenLine, LockKeyhole, Check, ArrowLeft, Copy, Pencil, Trash2,
+  PenLine, LockKeyhole, Check, ArrowLeft, Copy, Pencil, Trash2, HelpCircle, CalendarDays,
 } from "lucide-react";
 import "./styles.css";
 import { auth, firebaseConfigured, ensureAnonymousSession } from "./services/firebase/client";
@@ -20,7 +20,18 @@ import {
   addBookmark, removeBookmark, subscribeToBookmarks,
 } from "./services/firestoreBookmarks";
 import CommentSection from "./components/CommentSection";
+import { useTodayPrompt } from "./features/daily/useTodayPrompt";
 
+// Phase 3 pages are loaded on demand so the main feed stays light.
+const FEATURES = {
+  letters: { name: "Letters", Page: lazy(() => import("./features/letters/LettersPage.jsx")) },
+  ask: { name: "Ask Anything", Page: lazy(() => import("./features/ask/AskPage.jsx")) },
+  midnight: { name: "Midnight", Page: lazy(() => import("./features/midnight/MidnightPage.jsx")) },
+  daily: { name: "Daily question", Page: lazy(() => import("./features/daily/DailyPage.jsx")) },
+  journal: { name: "Private journal", Page: lazy(() => import("./features/journal/JournalPage.jsx")) },
+};
+const FEATURE_KEY_BY_NAME = Object.fromEntries(Object.entries(FEATURES).map(([key, f]) => [f.name, key]));
+const FEATURE_ROUTE = /^\/(letters|ask|midnight|daily|journal)(?:\/([^/]+))?\/?$/;
 const STORAGE_KEY = "unsaid-phase2-posts";
 const SAVED_KEY = "unsaid-phase2-saved";
 const THEME_KEY = "unsaid-theme";
@@ -84,6 +95,8 @@ function App() {
   });
   const [mobileNav, setMobileNav] = useState(false);
   const [selectedPost, setSelectedPost] = useState(null);
+  const [featureRoute, setFeatureRoute] = useState(null);
+  const today = useTodayPrompt(cloudUser, firebaseConfigured);
   const toastTimer = useRef(null);
   const lastPublish = useRef(0);
   const composerOpener = useRef(null);
@@ -159,18 +172,36 @@ function App() {
   }, [light]);
   useEffect(() => { localStorage.setItem(SAVED_KEY, JSON.stringify(saved)); }, [saved]);
   useEffect(() => {
-    const sync = () => {
-      const match = window.location.pathname.match(/^\/post\/([^/]+)\/?$/);
-      setSelectedPost(match ? decodeURIComponent(match[1]) : null);
-    };
+    const sync = () => applyLocation();
     sync(); window.addEventListener("popstate", sync);
     return () => window.removeEventListener("popstate", sync);
   }, []);
 
   function notify(message) { setToast(message); window.clearTimeout(toastTimer.current); toastTimer.current = window.setTimeout(()=>setToast(""), 2600); }
+  function applyLocation() {
+    const path = window.location.pathname;
+    const post = path.match(/^\/post\/([^/]+)\/?$/);
+    const feature = path.match(FEATURE_ROUTE);
+    setSelectedPost(post ? decodeURIComponent(post[1]) : null);
+    if (feature) {
+      setFeatureRoute({ key: feature[1], id: feature[2] ? decodeURIComponent(feature[2]) : null });
+      setActive(FEATURES[feature[1]].name);
+    } else setFeatureRoute(null);
+  }
+  function navigate(path) {
+    window.history.pushState({}, "", path);
+    applyLocation(); setMobileNav(false); window.scrollTo({top:0,behavior:"smooth"});
+  }
   function goHome(section="Explore") {
+    const featureKey = FEATURE_KEY_BY_NAME[section];
+    if (featureKey) { navigate(`/${featureKey}`); return; }
     window.history.pushState({}, "", "/");
-    setSelectedPost(null); setActive(section); setMobileNav(false); window.scrollTo({top:0,behavior:"smooth"});
+    setSelectedPost(null); setFeatureRoute(null); setActive(section); setMobileNav(false); window.scrollTo({top:0,behavior:"smooth"});
+  }
+  async function ensureUser() {
+    const user = cloudUser || await ensureAnonymousSession();
+    if (!cloudUser) setCloudUser(user);
+    return user;
   }
   function openPost(id) {
     window.history.pushState({}, "", `/post/${encodeURIComponent(id)}`);
@@ -340,7 +371,8 @@ function App() {
 
   const navItems = [
     { name: "Explore", icon: Compass }, { name: "Confessions", icon: Heart },
-    { name: "Discussions", icon: MessageCircle }, { name: "Letters", icon: Mail }, { name: "Midnight", icon: MoonStar },
+    { name: "Discussions", icon: MessageCircle }, { name: "Letters", icon: Mail }, { name: "Ask Anything", icon: HelpCircle },
+    { name: "Midnight", icon: MoonStar }, { name: "Daily question", icon: CalendarDays },
   ];
   const heads = {
     Explore: ["Say what you haven't said.", "Anonymous thoughts from people who don't need to be known."],
@@ -348,11 +380,8 @@ function App() {
     Discussions: ["Discussions.", "Questions and opinions worth talking through."],
     "Saved thoughts": ["Saved thoughts.", "Kept on this device only."],
     About: ["About unsaid.", "A place for thoughtful anonymous writing. Currently a prototype."],
-    Letters: ["Letters never sent.", "Write the words you never got to say."],
-    Midnight: ["After dark.", "A quiet place for thoughts that arrive late."],
   };
   const [pageTitle, pageSub] = heads[active] ?? heads.Explore;
-  const comingSoon = active === "Letters" || active === "Midnight";
   const statusText = cloudStatus === "connected" ? "Shared community" : cloudStatus === "connecting" ? "Connecting…" : cloudStatus === "error" ? "Connection issue" : "Local preview";
 
   const REACTIONS = [{ type: "understand", label: "I understand" }, { type: "alone", label: "Not alone" }, { type: "feel", label: "Feel this" }];
@@ -478,13 +507,17 @@ function App() {
         {navItems.map(n => { const Icon = n.icon; const on = active === n.name && !selectedPost; return <button type="button" key={n.name} className={`side-link ${on ? "active" : ""}`} aria-current={on ? "page" : undefined} onClick={() => goHome(n.name)}><Icon size={18} aria-hidden="true" />{n.name}</button>; })}
         <div className="side-label">Yours</div>
         <button type="button" className={`side-link ${active === "Saved thoughts" && !selectedPost ? "active" : ""}`} aria-current={active === "Saved thoughts" && !selectedPost ? "page" : undefined} onClick={() => goHome("Saved thoughts")}><Bookmark size={18} aria-hidden="true" />Saved thoughts</button>
-        <button type="button" className="side-link" onClick={() => notify("Private journal is planned for a later phase.")}><LockKeyhole size={18} aria-hidden="true" />Private journal</button>
+        <button type="button" className={`side-link ${active === "Private journal" && !selectedPost ? "active" : ""}`} aria-current={active === "Private journal" && !selectedPost ? "page" : undefined} onClick={() => goHome("Private journal")}><LockKeyhole size={18} aria-hidden="true" />Private journal</button>
         <p className="side-note">{firebaseConfigured ? "No names, no profiles. Posts are tied to a random anonymous session." : "Local preview: posts stay in this browser and are not shared."}</p>
       </nav>
 
       <main className="main">
         <div className="column">
-          {selectedPost && !currentPost && cloudStatus !== "connecting"
+          {featureRoute
+            ? <Suspense fallback={<div className="skeletons" role="status" aria-busy="true" aria-label="Loading"><div className="skeleton" /><div className="skeleton short" /></div>}>
+                {(() => { const { Page } = FEATURES[featureRoute.key]; return <Page key={featureRoute.key} id={featureRoute.id} configured={firebaseConfigured} user={cloudUser} ensureUser={ensureUser} notify={notify} bookmarks={effectiveSaved} toggleBookmark={handleToggleSave} navigate={navigate} />; })()}
+              </Suspense>
+            : selectedPost && !currentPost && cloudStatus !== "connecting"
             ? <section className="detail"><button type="button" className="back" onClick={() => goHome()}><ArrowLeft size={16} aria-hidden="true" /> Back to the feed</button><div className="empty"><h1 className="sr-only">Thought not found</h1><h3>Thought not found</h3><p>It may have been deleted, or it isn't available here.</p></div></section>
             : currentPost
               ? <PostDetail post={currentPost} detailLoading={detailLoading} onBack={() => goHome()} onReact={(id,type)=>handleReact(id,type)} userReaction={cloudReactions[currentPost.id]?.[cloudUser?.uid] ?? userReactions[currentPost.id]} reactions={currentPost.reactions} isSaved={effectiveSaved.includes(currentPost.id)} onSave={()=>handleToggleSave(currentPost.id)} onShare={sharePost} onReport={reportPost} onEdit={()=>openComposer(currentPost)} onDelete={()=>deletePost(currentPost.id)} comments={comments[currentPost.id] ?? []} onAddComment={(text, parentId)=>handleAddComment(currentPost.id, text, parentId)} onDeleteComment={(commentId)=>handleDeleteComment(currentPost.id, commentId)} authorLabel={currentPost.author} currentUid={cloudUser?.uid ?? null} />
@@ -493,13 +526,11 @@ function App() {
                   <h1>{pageTitle}</h1>
                   <p>{pageSub}</p>
                 </section>
-                {comingSoon
-                  ? <div className="empty"><h2 className="sr-only">Not open yet</h2><h3>Not open yet</h3><p>This space isn't ready. For now, you can read and write in Explore.</p><button type="button" className="btn" onClick={() => goHome("Explore")}>Go to Explore</button></div>
-                  : <>
+                <>
                     <section className="question" aria-labelledby="daily-q">
                       <small>Today's question</small>
-                      <h2 id="daily-q">{prompts[dailyIndex]}</h2>
-                      <button type="button" className="btn" onClick={() => openComposer()}>Answer anonymously</button>
+                      <h2 id="daily-q">{!firebaseConfigured ? prompts[dailyIndex] : today.status === "ready" ? (today.prompt?.text ?? "A new question is on its way.") : "Today's community question is waiting."}</h2>
+                      <button type="button" className="btn" onClick={() => (firebaseConfigured ? navigate("/daily") : openComposer())}>{firebaseConfigured ? "See the question" : "Answer anonymously"}</button>
                     </section>
                     <section id="community-feed" aria-labelledby="feed-title">
                       <div className="feed-head">
@@ -519,7 +550,7 @@ function App() {
                       </div>
                       {!!visiblePosts.length && <p className="feed-end">You're all caught up.</p>}
                     </section>
-                  </>}
+                </>
               </>}
         </div>
         <footer className="footer">
