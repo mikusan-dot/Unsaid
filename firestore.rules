@@ -1,5 +1,5 @@
 rules_version = '2';
-// UNSAID Firestore rules (Phases 2 and 3).
+// UNSAID Firestore rules (Phases 2, 3 and 4).
 // Test in the Firebase emulator before deploying (see README). Spark plan: no paid features used.
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -102,12 +102,14 @@ service cloud.firestore {
       allow read: if request.auth != null && request.auth.uid == resource.data.uid;
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.uid
-        && request.resource.data.keys().hasOnly(['uid','createdAt','kind'])
+        && request.resource.data.keys().hasOnly(['uid','createdAt','kind','parent'])
         && request.resource.data.keys().hasAll(['uid','createdAt'])
         && request.resource.data.uid is string
         && request.resource.data.uid.size() > 0
         && request.resource.data.createdAt is timestamp
-        && (!('kind' in request.resource.data) || request.resource.data.kind in ['letter','question','answer','thought']);
+        && (!('kind' in request.resource.data) || request.resource.data.kind in ['letter','question','answer','thought'])
+        // Phase 4: an answer's owner record may name its question so "My answers" can link back to it.
+        && (!('parent' in request.resource.data) || (request.resource.data.kind == 'answer' && str(request.resource.data.parent, 1, 128)));
       allow update: if false;
       allow delete: if request.auth != null && request.auth.uid == resource.data.uid;
     }
@@ -153,6 +155,39 @@ service cloud.firestore {
       allow delete: if request.auth != null && request.auth.uid == uid;
     }
 
+    // ===================================================================== PHASE 4
+    // PRIVATE PROFILE users/{uid}: readable and writable only by its owner. Holds no credentials and no email
+    // (those live in Firebase Authentication). createdAt can never be changed. accountType/linkedProviders
+    // mirror Auth for convenience and grant no access.
+    function prefsOk(p) {
+      return p is map
+        && p.keys().hasOnly(['theme','defaultSort','defaultCategory'])
+        && p.keys().hasAll(['theme','defaultSort','defaultCategory'])
+        && p.theme in ['system','light','dark']
+        && p.defaultSort in ['Latest','Trending','Most discussed']
+        && p.defaultCategory in ['All','Thoughts','Confessions','Relationships','Friendship','Loneliness','University Life','Mental Wellbeing','Society','Unpopular Opinions','Life Experiences','Questions'];
+    }
+    function profileOk(d) {
+      return d.keys().hasOnly(['createdAt','updatedAt','accountType','displayName','preferences','linkedProviders'])
+        && d.keys().hasAll(['createdAt','updatedAt','accountType','displayName','preferences','linkedProviders'])
+        && d.accountType in ['anonymous','registered']
+        && str(d.displayName, 0, 30)
+        && prefsOk(d.preferences)
+        && d.linkedProviders is list && d.linkedProviders.size() <= 2
+        && d.linkedProviders.hasOnly(['password','google.com'])
+        && d.updatedAt == request.time;
+    }
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && profileOk(request.resource.data)
+        && request.resource.data.createdAt == request.time;
+      allow update: if request.auth != null && request.auth.uid == uid
+        && profileOk(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
     // ===================================================================== PHASE 3
 
     match /letters/{id} {
@@ -169,8 +204,16 @@ service cloud.firestore {
         && request.resource.data.authorLabel.matches('^Anonymous #[0-9]{4}$')
         && request.resource.data.createdAt == request.time
         && isOwnerAfter(id);
-      // anyone signed in may nudge the counters (bounded, see helpers); nothing else changes
-      allow update: if request.auth != null && counterOnlyUpdate(['comments','reactions']);
+      // anyone signed in may nudge the counters (bounded, see helpers); Phase 4: the owner may also edit the letter
+      allow update: if request.auth != null && (
+        (isOwnerOf(id)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title','body','category','edited','updatedAt'])
+          && str(request.resource.data.title, 3, 100)
+          && str(request.resource.data.body, 30, 5000)
+          && request.resource.data.category in ['Someone I Miss','To My Past Self','To My Future Self','Things I Never Said','Unspoken Love','Goodbye Letters','Unsent Apologies']
+          && request.resource.data.edited == true)
+        || counterOnlyUpdate(['comments','reactions'])
+      );
       allow delete: if isOwnerOf(id);
     }
 
@@ -245,7 +288,7 @@ service cloud.firestore {
       allow create, update: if request.auth != null && request.auth.uid == uid
         && request.resource.data.keys().hasOnly(['t'])
         && request.resource.data.t == request.time;
-      allow delete: if false;
+      allow delete: if request.auth != null && request.auth.uid == uid;   // Phase 4: account deletion cleans this up
     }
     // One private marker per (prompt, anonymous session): its existence blocks a second response.
     match /dailyMarkers/{markerId} {

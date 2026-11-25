@@ -147,7 +147,7 @@ function Answers({ questionId, user, ensureUser, notify }) {
     setError(""); setBusy(true);
     try {
       const u = user || await ensureUser();
-      await createContent({ path, kind: "answer", uid: u.uid, fields: { text: text.trim(), reactions: zeroReactions(), comments: 0 }, bumpParent: bump });
+      await createContent({ path, kind: "answer", uid: u.uid, fields: { text: text.trim(), reactions: zeroReactions(), comments: 0 }, bumpParent: bump, ownerExtra: { parent: questionId } });
       setText(""); notify("Answer posted anonymously.");
     } catch (err) { console.error(err); setError("Couldn't post your answer. Please try again."); }
     finally { setBusy(false); }

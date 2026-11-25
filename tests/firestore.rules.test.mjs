@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { test, before, after, beforeEach } from "node:test";
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
-import { doc, setDoc, getDoc, getDocs, deleteDoc, updateDoc, writeBatch, serverTimestamp, collection } from "firebase/firestore";
+import { doc, setDoc, getDoc, getDocs, deleteDoc, updateDoc, writeBatch, serverTimestamp, collection, query, where } from "firebase/firestore";
 
 let env;
 before(async () => { env = await initializeTestEnvironment({ projectId: "unsaid-rules-test", firestore: { rules: readFileSync("firestore.rules", "utf8") } }); });
@@ -144,4 +144,69 @@ test("phase 2 posts still work: create with owner record, counters, owner edit; 
   await assertSucceeds(updateDoc(doc(db, "posts", "P1"), { text: "Edited by the owner, still valid.", edited: true, updatedAt: ts() }));
   await assertFails(updateDoc(doc(as("bob"), "posts", "P1"), { text: "Edited by a stranger, not valid." }));
   await assertFails(setDoc(doc(as("a"), "surprise", "x"), { a: 1 }));
+});
+
+// ============================================================ PHASE 4 (accounts). Not executed in the authoring environment.
+const profile = (o = {}) => ({ createdAt: ts(), updatedAt: ts(), accountType: "anonymous", displayName: "", preferences: { theme: "system", defaultSort: "Latest", defaultCategory: "All" }, linkedProviders: [], ...o });
+
+test("users/{uid}: owner creates a valid profile; nobody else can read or write it", async () => {
+  await assertSucceeds(setDoc(doc(as("alice"), "users", "alice"), profile()));
+  await assertSucceeds(getDoc(doc(as("alice"), "users", "alice")));
+  await assertFails(getDoc(doc(as("bob"), "users", "alice")));
+  await assertFails(getDoc(doc(anon(), "users", "alice")));
+  await assertFails(setDoc(doc(as("bob"), "users", "alice"), profile()));
+  await assertFails(deleteDoc(doc(as("bob"), "users", "alice")));
+  await assertSucceeds(deleteDoc(doc(as("alice"), "users", "alice")));
+});
+test("users/{uid}: shape is strict (no email, no extra keys, bounded name, valid enums)", async () => {
+  const create = (o) => setDoc(doc(as("alice"), "users", "alice"), profile(o));
+  await assertFails(create({ email: "a@b.co" }));
+  await assertFails(create({ accountType: "admin" }));
+  await assertFails(create({ displayName: "x".repeat(31) }));
+  await assertFails(create({ preferences: { theme: "neon", defaultSort: "Latest", defaultCategory: "All" } }));
+  await assertFails(create({ preferences: { theme: "dark", defaultSort: "Latest", defaultCategory: "All", extra: 1 } }));
+  await assertFails(create({ linkedProviders: ["facebook.com"] }));
+  await assertFails(create({ createdAt: new Date() }));            // must be the server time
+  await assertSucceeds(create({ accountType: "registered", linkedProviders: ["password", "google.com"], displayName: "Night owl" }));
+});
+test("users/{uid}: createdAt cannot be changed; bookmarks stay private", async () => {
+  await assertSucceeds(setDoc(doc(as("alice"), "users", "alice"), profile()));
+  const upd = (o) => updateDoc(doc(as("alice"), "users", "alice"), { updatedAt: ts(), ...o });
+  await assertSucceeds(upd({ displayName: "New name" }));
+  await assertFails(upd({ createdAt: new Date("2020-01-01") }));
+  await assertFails(upd({ password: "x" }));
+  await assertSucceeds(setDoc(doc(as("alice"), "users", "alice", "bookmarks", "p1"), { postId: "p1", createdAt: ts() }));
+  await assertFails(getDoc(doc(as("bob"), "users", "alice", "bookmarks", "p1")));
+});
+test("postOwners: optional parent only for answers, bounded; owners list only their own records", async () => {
+  const own = (db, id, o) => setDoc(doc(db, "postOwners", id), { uid: "alice", createdAt: ts(), ...o });
+  await assertSucceeds(own(as("alice"), "A1", { kind: "answer", parent: "Q1" }));
+  await assertFails(own(as("alice"), "A2", { kind: "letter", parent: "Q1" }));
+  await assertFails(own(as("alice"), "A3", { parent: "Q1" }));
+  await assertFails(own(as("alice"), "A4", { kind: "answer", parent: "" }));
+  await assertFails(own(as("alice"), "A5", { kind: "answer", parent: "x".repeat(129) }));
+  await assertFails(own(as("alice"), "A6", { kind: "answer", parent: "Q1", extra: 1 }));
+  await assertSucceeds(getDocs(query(collection(as("alice"), "postOwners"), where("uid", "==", "alice"))));
+  await assertFails(getDocs(query(collection(as("bob"), "postOwners"), where("uid", "==", "alice"))));
+  await assertFails(getDocs(collection(as("bob"), "postOwners")));
+});
+test("letters: the owner may edit; others and out-of-bounds edits are rejected", async () => {
+  await createLetter(as("alice"), "alice");
+  const edit = (db, o) => updateDoc(doc(db, "letters", "L1"), { title: "Dear me", body: "y".repeat(40), category: "To My Past Self", edited: true, updatedAt: ts(), ...o });
+  await assertSucceeds(edit(as("alice")));
+  await assertFails(edit(as("bob")));
+  await assertFails(edit(as("alice"), { edited: false }));
+  await assertFails(edit(as("alice"), { body: "short" }));
+  await assertFails(edit(as("alice"), { category: "Nope" }));
+  await assertFails(edit(as("alice"), { authorLabel: "Anonymous #9999" }));
+  await assertFails(edit(as("alice"), { createdAt: new Date() }));
+  await assertSucceeds(updateDoc(doc(as("bob"), "letters", "L1"), { comments: 1 }));  // counters unchanged for everyone
+});
+test("clock: only the owner may delete their record (account deletion); journals never cross users", async () => {
+  await assertSucceeds(setDoc(doc(as("alice"), "clock", "alice"), { t: ts() }));
+  await assertFails(deleteDoc(doc(as("bob"), "clock", "alice")));
+  await assertSucceeds(deleteDoc(doc(as("alice"), "clock", "alice")));
+  await assertSucceeds(setDoc(doc(as("alice"), "journals", "alice", "entries", "e1"), { title: "", body: "private", mood: "", createdAt: ts(), updatedAt: ts() }));
+  await assertFails(getDocs(collection(as("bob"), "journals", "alice", "entries")));
+  await assertFails(getDocs(collection(anon(), "journals", "alice", "entries")));
 });

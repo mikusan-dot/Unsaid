@@ -110,3 +110,8 @@ Only the signed-in owner can read or write `journals/{uid}/entries`; no public q
 - The daily question rolls over at 00:00 UTC (`DAILY_DAY_OFFSET_HOURS` in `src/services/content/limits.js`).
 - Rule-checked writes cost extra document reads against the free daily quota.
 - Visiting the daily page, the journal, or any write creates an anonymous Firebase session.
+
+
+## Phase 4: optional accounts
+
+See [PHASE4.md](PHASE4.md) for the authentication architecture, account linking, schema, rules, deletion limits, console setup and commands.

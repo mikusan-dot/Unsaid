@@ -9,3 +9,7 @@ dist
 
 serviceAccount*.json
 *-firebase-adminsdk-*.json
+
+# Phase 4 test build output
+tests/.build/
+tests/.ui-dist/

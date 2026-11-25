@@ -65,7 +65,7 @@ function Journal({ ensureUser, notify }) {
       <summary>How private is this, really?</summary>
       <p><strong>Who can read it:</strong> only this anonymous session. The database rules reject every read and write except by the owner, and entries are stored apart from all public content.</p>
       <p><strong>What it isn't:</strong> it is not end-to-end encrypted. Entries are stored unencrypted on Google's Firebase servers, so anyone with administrator access to this project's Firebase console could technically see database contents. The app has no moderation view of journals.</p>
-      <p><strong>No account recovery:</strong> your journal is tied to this browser's anonymous session. Clearing site data, switching browsers or devices, or private windows will lock you out permanently, and nobody can restore access. Use Export to keep your own backup.</p>
+      <p><strong>No account recovery:</strong> your journal is tied to this browser's anonymous session. Clearing site data, switching browsers or devices, or private windows will lock you out permanently, and nobody can restore access. Link an email or Google account from <a href="/account/security">Account → Security</a> to keep access, and use Export for your own backup.</p>
     </details>
     <div className="subnav">
       <label className="searchbox"><span className="sr-only">Search your entries</span><input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search your entries" /></label>

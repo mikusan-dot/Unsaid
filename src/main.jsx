@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from "rea
 import { createRoot } from "react-dom/client";
 import {
   Compass, MessageCircle, MoonStar, Mail, Heart, Search, Sun, Menu, X, Bookmark, Flag,
-  PenLine, LockKeyhole, Check, ArrowLeft, Copy, Pencil, Trash2, HelpCircle, CalendarDays,
+  PenLine, LockKeyhole, Check, ArrowLeft, Copy, Pencil, Trash2, HelpCircle, CalendarDays, UserRound,
 } from "lucide-react";
 import "./styles.css";
 import { auth, firebaseConfigured, ensureAnonymousSession } from "./services/firebase/client";
@@ -21,6 +21,8 @@ import {
 } from "./services/firestoreBookmarks";
 import CommentSection from "./components/CommentSection";
 import { useTodayPrompt } from "./features/daily/useTodayPrompt";
+import { onAccountChange } from "./services/auth/account";
+import { fetchProfile } from "./services/account/profile";
 
 // Phase 3 pages are loaded on demand so the main feed stays light.
 const FEATURES = {
@@ -30,6 +32,9 @@ const FEATURES = {
   daily: { name: "Daily question", Page: lazy(() => import("./features/daily/DailyPage.jsx")) },
   journal: { name: "Private journal", Page: lazy(() => import("./features/journal/JournalPage.jsx")) },
 };
+// Phase 4: optional accounts (sign in, register, dashboard, activity, settings, security).
+const AccountApp = lazy(() => import("./features/account/AccountApp.jsx"));
+const ACCOUNT_ROUTE = /^\/(signin|register|account)(?:\/([a-z-]+))?\/?$/;
 const FEATURE_KEY_BY_NAME = Object.fromEntries(Object.entries(FEATURES).map(([key, f]) => [f.name, key]));
 const FEATURE_ROUTE = /^\/(letters|ask|midnight|daily|journal)(?:\/([^/]+))?\/?$/;
 const STORAGE_KEY = "unsaid-phase2-posts";
@@ -96,6 +101,8 @@ function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [selectedPost, setSelectedPost] = useState(null);
   const [featureRoute, setFeatureRoute] = useState(null);
+  const [accountRoute, setAccountRoute] = useState(null);
+  const [, setAuthTick] = useState(0);
   const today = useTodayPrompt(cloudUser, firebaseConfigured);
   const toastTimer = useRef(null);
   const lastPublish = useRef(0);
@@ -108,8 +115,19 @@ function App() {
 
   useEffect(() => {
     if (!firebaseConfigured) return;
-    return onAuthStateChanged(auth, (user) => setCloudUser(user));
+    const stopAuth = onAuthStateChanged(auth, (user) => setCloudUser(user));
+    // Linking an anonymous user keeps the uid and does not fire onAuthStateChanged, so re-render on our own signal.
+    const stopAccount = onAccountChange(() => { setCloudUser(auth.currentUser); setAuthTick((t) => t + 1); });
+    return () => { stopAuth(); stopAccount(); };
   }, []);
+  // Saved preferences (theme, default feed order and space) follow the account.
+  useEffect(() => {
+    if (!firebaseConfigured || !cloudUser) return;
+    let on = true;
+    fetchProfile(cloudUser.uid).then((p) => { if (on && p?.preferences) applyPrefs(p.preferences); }).catch(() => {});
+    return () => { on = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloudUser?.uid]);
   useEffect(() => {
     if (!firebaseConfigured) localStorage.setItem(STORAGE_KEY, JSON.stringify(posts));
   }, [posts]);
@@ -182,11 +200,20 @@ function App() {
     const path = window.location.pathname;
     const post = path.match(/^\/post\/([^/]+)\/?$/);
     const feature = path.match(FEATURE_ROUTE);
+    const account = path.match(ACCOUNT_ROUTE);
+    setAccountRoute(account ? { page: account[1], section: account[2] || null } : null);
+    if (account) setActive("Account");
     setSelectedPost(post ? decodeURIComponent(post[1]) : null);
     if (feature) {
       setFeatureRoute({ key: feature[1], id: feature[2] ? decodeURIComponent(feature[2]) : null });
       setActive(FEATURES[feature[1]].name);
     } else setFeatureRoute(null);
+  }
+  function applyPrefs(prefs) {
+    if (prefs.theme === "light" || prefs.theme === "dark") setLight(prefs.theme === "light");
+    else if (prefs.theme === "system") setLight(window.matchMedia?.("(prefers-color-scheme: light)").matches ?? false);
+    if (prefs.defaultSort) setSort(prefs.defaultSort);
+    if (prefs.defaultCategory) setCategory(prefs.defaultCategory);
   }
   function navigate(path) {
     window.history.pushState({}, "", path);
@@ -196,7 +223,7 @@ function App() {
     const featureKey = FEATURE_KEY_BY_NAME[section];
     if (featureKey) { navigate(`/${featureKey}`); return; }
     window.history.pushState({}, "", "/");
-    setSelectedPost(null); setFeatureRoute(null); setActive(section); setMobileNav(false); window.scrollTo({top:0,behavior:"smooth"});
+    setSelectedPost(null); setFeatureRoute(null); setAccountRoute(null); setActive(section); setMobileNav(false); window.scrollTo({top:0,behavior:"smooth"});
   }
   async function ensureUser() {
     const user = cloudUser || await ensureAnonymousSession();
@@ -496,6 +523,7 @@ function App() {
       <button type="button" className="mobile-menu icon-btn" aria-label="Toggle navigation" aria-expanded={mobileNav} aria-controls="side-nav" onClick={() => setMobileNav(!mobileNav)}>{mobileNav ? <X size={20} /> : <Menu size={20} />}</button>
       <a className="brand" href="/" aria-label="unsaid, home" onClick={e => { e.preventDefault(); goHome(); }}>unsaid<b>.</b></a>
       <div className="top-actions">
+        <button type="button" className="icon-btn" aria-label={cloudUser && !cloudUser.isAnonymous ? "Your account" : "Account and sign in"} title={cloudUser && !cloudUser.isAnonymous ? "Your account" : "Account and sign in"} onClick={() => navigate("/account")}><UserRound size={18} /></button>
         <button type="button" className="icon-btn" aria-label="Light theme" aria-pressed={light} onClick={() => setLight(!light)}>{light ? <MoonStar size={18} /> : <Sun size={18} />}</button>
         <button type="button" className="btn primary" aria-label="Write anonymously" onClick={() => openComposer()}><PenLine size={16} aria-hidden="true" /><span className="write-label" aria-hidden="true">Write anonymously</span></button>
       </div>
@@ -506,6 +534,7 @@ function App() {
         <div className="side-label">Spaces</div>
         {navItems.map(n => { const Icon = n.icon; const on = active === n.name && !selectedPost; return <button type="button" key={n.name} className={`side-link ${on ? "active" : ""}`} aria-current={on ? "page" : undefined} onClick={() => goHome(n.name)}><Icon size={18} aria-hidden="true" />{n.name}</button>; })}
         <div className="side-label">Yours</div>
+        {firebaseConfigured && <button type="button" className={`side-link ${accountRoute ? "active" : ""}`} aria-current={accountRoute ? "page" : undefined} onClick={() => navigate("/account")}><UserRound size={18} aria-hidden="true" />My account</button>}
         <button type="button" className={`side-link ${active === "Saved thoughts" && !selectedPost ? "active" : ""}`} aria-current={active === "Saved thoughts" && !selectedPost ? "page" : undefined} onClick={() => goHome("Saved thoughts")}><Bookmark size={18} aria-hidden="true" />Saved thoughts</button>
         <button type="button" className={`side-link ${active === "Private journal" && !selectedPost ? "active" : ""}`} aria-current={active === "Private journal" && !selectedPost ? "page" : undefined} onClick={() => goHome("Private journal")}><LockKeyhole size={18} aria-hidden="true" />Private journal</button>
         <p className="side-note">{firebaseConfigured ? "No names, no profiles. Posts are tied to a random anonymous session." : "Local preview: posts stay in this browser and are not shared."}</p>
@@ -513,7 +542,11 @@ function App() {
 
       <main className="main">
         <div className="column">
-          {featureRoute
+          {accountRoute
+            ? <Suspense fallback={<div className="skeletons" role="status" aria-busy="true" aria-label="Loading"><div className="skeleton" /><div className="skeleton short" /></div>}>
+                <AccountApp page={accountRoute.page} section={accountRoute.section} configured={firebaseConfigured} user={cloudUser} ensureUser={ensureUser} notify={notify} navigate={navigate} applyPrefs={applyPrefs} />
+              </Suspense>
+            : featureRoute
             ? <Suspense fallback={<div className="skeletons" role="status" aria-busy="true" aria-label="Loading"><div className="skeleton" /><div className="skeleton short" /></div>}>
                 {(() => { const { Page } = FEATURES[featureRoute.key]; return <Page key={featureRoute.key} id={featureRoute.id} configured={firebaseConfigured} user={cloudUser} ensureUser={ensureUser} notify={notify} bookmarks={effectiveSaved} toggleBookmark={handleToggleSave} navigate={navigate} />; })()}
               </Suspense>
@@ -558,7 +591,7 @@ function App() {
           <div className="footer-links">
             <button type="button" onClick={() => goHome("About")}>About</button>
             <button type="button" onClick={() => notify("Be kind. Don't share identifying details, threats, or targeted harassment.")}>Guidelines</button>
-            <button type="button" onClick={() => notify(firebaseConfigured ? "Posts are stored anonymously. We don't ask for your name or email." : "This preview stores data only in your browser.")}>Privacy</button>
+            <button type="button" onClick={() => notify(firebaseConfigured ? "Posts are stored anonymously. An account is optional; if you add one, your email stays private and is never shown with your writing." : "This preview stores data only in your browser.")}>Privacy</button>
           </div>
         </footer>
       </main>

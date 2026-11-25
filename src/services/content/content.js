@@ -32,11 +32,11 @@ async function assertOwner(id, uid, message) {
   if (!owner.exists() || owner.data().uid !== uid) throw new Error(message);
 }
 
-export async function createContent({ path, kind, uid, fields, bumpParent }) {
+export async function createContent({ path, kind, uid, fields, bumpParent, ownerExtra = {} }) {
   const ref = doc(col(path));
   const batch = writeBatch(db);
   batch.set(ref, { ...fields, authorLabel: makeAnonymousId(), createdAt: serverTimestamp() });
-  batch.set(doc(db, "postOwners", ref.id), { uid, kind, createdAt: serverTimestamp() });
+  batch.set(doc(db, "postOwners", ref.id), { uid, kind, ...ownerExtra, createdAt: serverTimestamp() });
   if (bumpParent) batch.update(doc(db, ...bumpParent.path), { [bumpParent.field]: increment(1) });
   await batch.commit();
   return ref.id;
